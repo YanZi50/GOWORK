@@ -8,6 +8,15 @@
 
 ## 服务内核（server.py）
 
+### B-12 下载路径无法配置，下载去向不可控（2026-10-08）
+- **现象**：用户反馈"下载路径无法改，不知道下载到哪里"；此前虽有每次弹保存框逻辑，但无固定配置项。
+- **根因**：前端下载按钮直接 `location.href` 走 QtWebEngine 下载流程；desktop 虽有 `downloadRequested` 弹窗 handler，但"每次弹窗"体验差、且没有可配置的默认路径，用户无法预先设定下载位置。
+- **解决**：
+  1. `config.json` 新增 `download_dir`（默认空）；`/api/config` 本机回显；`_api_server_name` 扩展为通用 `_api_config_update`（支持 `server_name` + `download_dir`，仅本机）
+  2. desktop `_on_download`：已配置 `download_dir` → 静默存到该目录；未配置 → 弹目录选择并**自动记住**（写入 config，此后不再询问）
+  3. 高级设置卡新增「下载位置」：显示当前路径（未设置则占位提示）、「选择…」（`native.pickDownloadDir` 桥）、「清除」
+- **防复现**：下载落盘逻辑改动必查此条；新配置项遵循"`load_config` setdefault → `_api_config` 本机回显 → 更新 API → UI 配置入口"四步链路。
+
 ### B-11 端口双实例抢占，测试污染真实数据（2026-10-08，严重）
 - **现象**：自检过程中"密码测试"共享被写进用户真实 `config.json`（累计 6-10 条）；页面共享卡片数异常。
 - **根因**：`ThreadingHTTPServer` 默认 `allow_reuse_address=1`（Windows SO_REUSEADDR 允许双 socket 绑同一端口）。用户真实实例与自检实例同时 bind 同一端口成功，HTTP 请求实际打到旧实例，数据被写进真实配置。

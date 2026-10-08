@@ -170,6 +170,11 @@ class NativeBridge(QObject):
         path = QFileDialog.getExistingDirectory(None, "选择要共享的文件夹")
         return path or ""
 
+    @Slot(result=str)
+    def pickDownloadDir(self):
+        path = QFileDialog.getExistingDirectory(None, "选择下载保存位置")
+        return path or ""
+
     @Slot(str, result=str)
     def addFolder(self, path):
         """桌面端拖拽/传入文件夹 -> 直接添加为公开共享。返回 JSON 字符串。"""
@@ -422,19 +427,25 @@ def run():
     icon = build_icons()
     win = MainWindow(local_url, icon)
 
-    # 下载位置：每次下载弹保存对话框，让用户选择存到哪里（QtWebEngine 默认静默存"下载"目录）
+    # 下载位置：若已配置 download_dir 则静默存到该目录；未配置则弹窗让用户选择并自动记住
     try:
         from PySide6.QtWebEngineWidgets import QWebEngineProfile
 
         def _on_download(item):
-            default_dir = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
-            suggested = os.path.join(default_dir, item.suggestedFileName() or "download")
-            path, _ = QFileDialog.getSaveFileName(win, "保存下载文件到…", suggested)
-            if path:
-                item.setPath(path)
-                item.accept()
-            else:
-                item.cancel()
+            from PySide6.QtWidgets import QFileDialog
+            dl_dir = (S.app.cfg.get("download_dir") or "").strip()
+            if not dl_dir:
+                # 默认没有路径：提醒并让用户选择一次，之后固定保存到该目录
+                dl_dir = QFileDialog.getExistingDirectory(win, "请选择下载保存位置（选一次后自动记住）")
+                if not dl_dir:
+                    item.cancel()
+                    return
+                with S.app.lock:
+                    S.app.cfg["download_dir"] = dl_dir
+                S.app.save()
+            path = os.path.join(dl_dir, item.suggestedFileName() or "download")
+            item.setPath(path)
+            item.accept()
 
         QWebEngineProfile.defaultProfile().downloadRequested.connect(_on_download)
     except Exception:
@@ -598,7 +609,10 @@ def _selftest(app, win, svc):
             " themeMode: document.documentElement.dataset.theme || 'dark'," +
             " advCard: !!document.getElementById('advCard')," +
             " advAuto: !!document.getElementById('advAutostart')," +
+            " dlDirEl: !!document.getElementById('dlDirVal')," +
+            " pickBtn: !!document.getElementById('btnPickDlDir')," +
             " copyFn: typeof copyTextToClipboard === 'function' ? 'yes' : 'no'," +
+            " pickDirFn: (window.native && typeof window.native.pickDownloadDir === 'function') ? 'yes' : 'no'," +
             " cfgPort: location.port || ''," +
             " dlMore: !!document.querySelector('[data-dl-more]')," +
             " dropPathVal: (document.getElementById('fPath') || {}).value || ''," +

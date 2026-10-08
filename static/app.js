@@ -507,7 +507,7 @@
       '<div class="ac-head" data-adv-toggle role="button" tabindex="0">' +
       '<span class="share-icon">' + I.settings + "</span>" +
       '<div class="ac-main"><div class="ac-name">高级设置</div>' +
-      '<div class="ac-sub">开机自启 · 服务端口 · 数据存放位置 · 清空下载记录</div></div>' +
+      '<div class="ac-sub">开机自启 · 服务端口 · 下载位置 · 清空下载记录</div></div>' +
       '<span class="ac-arrow">' + I.back + "</span></div>" +
       '<div class="ac-body" hidden>' +
       '<div class="form-grid">' +
@@ -516,6 +516,12 @@
       '<div class="field"><label>服务端口</label><input class="input" value="' + esc(cfg.port || "") + '" readonly></div>' +
       '<div class="field"><label>数据目录（配置与下载记录存放处）</label>' +
       '<input class="input" value="' + esc(cfg.data_dir || "") + '" readonly></div>' +
+      '<div class="field field-full"><label>下载位置（本机下载的文件保存到哪）</label>' +
+      '<div class="path-row"><input class="input" id="dlDirVal" value="' + esc(cfg.download_dir || "") + '"' +
+      ' placeholder="未设置——下载时会提醒你先选位置" readonly>' +
+      '<button class="btn btn-ghost" type="button" id="btnPickDlDir">选择…</button>' +
+      '<button class="btn btn-ghost" type="button" id="btnClearDlDir"' + (cfg.download_dir ? "" : " disabled") + '>清除</button></div>' +
+      '<div class="field-hint">设置后本机下载自动保存到这里，不再每次询问</div></div>' +
       '<div class="field field-full"><label class="check-line">下载记录已保留（共 ' +
       '<span id="dlCountHint" style="font-weight:600">—</span> 条）</label></div>' +
       "</div></div></div>";
@@ -545,6 +551,56 @@
         body.hidden = !body.hidden;
         const arrow = advCard.querySelector(".ac-arrow");
         if (arrow) arrow.style.transform = body.hidden ? "" : "rotate(90deg)";
+      });
+    }
+
+    // 下载位置：选择 / 清除（仅本机管理页可见）
+    const btnPickDl = $("#btnPickDlDir");
+    if (btnPickDl) {
+      btnPickDl.addEventListener("click", async () => {
+        if (!window.native || typeof window.native.pickDownloadDir !== "function") {
+          toast("仅桌面版可设置下载位置", "error");
+          return;
+        }
+        const dir = await window.native.pickDownloadDir();
+        if (!dir) return;
+        try {
+          const r = await api("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ download_dir: dir }),
+          });
+          if (r && r.ok) {
+            const val = $("#dlDirVal");
+            if (val) val.value = dir;
+            const clr = $("#btnClearDlDir");
+            if (clr) clr.disabled = false;
+            toast("下载位置已设置：" + dir, "ok");
+          } else toast((r && r.error) || "保存失败", "error");
+        } catch (e) {
+          toast("保存失败：" + e.message, "error");
+        }
+      });
+    }
+    const btnClearDl = $("#btnClearDlDir");
+    if (btnClearDl) {
+      btnClearDl.addEventListener("click", async () => {
+        if (!confirm("确定清除下载位置？之后下载会再次提醒你选择。")) return;
+        try {
+          const r = await api("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ download_dir: "" }),
+          });
+          if (r && r.ok) {
+            const val = $("#dlDirVal");
+            if (val) val.value = "";
+            btnClearDl.disabled = true;
+            toast("已清除，下载时将再次提醒选择位置", "ok");
+          } else toast((r && r.error) || "保存失败", "error");
+        } catch (e) {
+          toast("保存失败：" + e.message, "error");
+        }
       });
     }
 

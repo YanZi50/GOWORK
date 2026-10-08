@@ -95,6 +95,7 @@ def load_config():
                 data.setdefault("server_name", socket.gethostname() or "局域网快传")
                 data.setdefault("shares", [])
                 data.setdefault("speed_limit_kb", 0)
+                data.setdefault("download_dir", "")  # 本机桌面版下载保存位置（空=未设置）
                 for s in data["shares"]:
                     s.setdefault("writable", False)
                 return data
@@ -599,6 +600,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         if local:
             resp["data_dir"] = str(DATA_DIR)  # 配置文件/下载记录存放位置，仅本机可见
+            resp["download_dir"] = self.app.cfg.get("download_dir", "")  # 本机下载保存位置，仅本机可见
         self._json(200, resp)
 
     def _api_peers(self):
@@ -1052,18 +1054,32 @@ class Handler(BaseHTTPRequestHandler):
         self._log("已删除共享：%s" % share_id)
         self._json(200, {"ok": True})
 
-    def _api_server_name(self, body):
+    def _api_config_update(self, body):
         if not self._is_local():
             self._json(403, {"error": "仅本机可管理"})
             return
-        name = str((body or {}).get("server_name", "")).strip()
-        if not name or len(name) > 40:
-            self._json(400, {"error": "设备名称需为 1-40 个字符"})
+        body = body or {}
+        changed = []
+        if "server_name" in body:
+            name = str(body.get("server_name", "")).strip()
+            if not name or len(name) > 40:
+                self._json(400, {"error": "设备名称需为 1-40 个字符"})
+                return
+            self.app.cfg["server_name"] = name
+            changed.append("server_name")
+        if "download_dir" in body:
+            dl = str(body.get("download_dir", "")).strip()
+            if dl and not os.path.isdir(dl):
+                self._json(400, {"error": "下载目录不存在或无效"})
+                return
+            self.app.cfg["download_dir"] = dl
+            changed.append("download_dir")
+        if not changed:
+            self._json(400, {"error": "没有可更新的配置项"})
             return
-        self.app.cfg["server_name"] = name
         self.app.save()
-        self._log("设备名称已更新：%s" % name)
-        self._json(200, {"ok": True})
+        self._log("配置已更新：%s" % ", ".join(changed))
+        self._json(200, {"ok": True, "download_dir": self.app.cfg.get("download_dir", "")})
 
     # ---- SSE ----
 
@@ -1143,7 +1159,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/logout":
                 return self._api_logout(body)
             if p == "/api/config":
-                return self._api_server_name(body)
+                return self._api_config_update(body)
             if p == "/api/upload":
                 return self._api_upload(qs)
             if p == "/api/limits":

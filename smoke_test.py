@@ -122,6 +122,18 @@ def main():
         check("保存限速 200", st == 200 and r.get("speed_limit_kb") == 256)
         big = os.urandom(1024 * 1024)
         t0 = time.time()
+
+        # 7.5) 下载位置配置：POST /api/config 保存 download_dir，本机回显一致且落盘
+        dl_dir = tempfile.mkdtemp(prefix="lanshare_dl_")
+        st, r = api("/api/config", json.dumps({"download_dir": dl_dir}).encode("utf-8"))
+        check("保存下载目录 200", st == 200 and r.get("download_dir") == dl_dir, str(r)[:200])
+        st, cfg2 = api("/api/config")
+        check("config 回显 download_dir", st == 200 and cfg2.get("download_dir") == dl_dir, str(cfg2)[:200])
+        _cfg_disk = json.loads((server_dir / "config.json").read_text(encoding="utf-8"))
+        check("download_dir 落盘", _cfg_disk.get("download_dir") == dl_dir)
+        st, r = api("/api/config", json.dumps({"download_dir": ""}).encode("utf-8"))
+        check("清除下载目录 200", st == 200 and r.get("download_dir") == "")
+
         st, r = api("/api/upload?share=%s&path=/&name=big.bin" % share_id, big,
                     ctype="application/octet-stream")
         elapsed = time.time() - t0
