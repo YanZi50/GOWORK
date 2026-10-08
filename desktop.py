@@ -1,0 +1,723 @@
+# -*- coding: utf-8 -*-
+"""
+局域网快传 LAN Share · 桌面版 v1.0
+==================================
+PySide6 / QtWebEngine 桌面壳：
+* 原生窗口内嵌 Web UI（复用 static/ 前端）
+* 系统托盘常驻（关闭窗口最小化到托盘，托盘可退出）
+* 开机自启（注册表 HKCU Run）
+* 真正的文件夹拖拽共享（Qt 层解析本地目录绝对路径）
+* 原生文件夹选择对话框、窗口内浏览其他设备、单实例锁
+* --selftest 离屏截图自检模式
+
+用法：
+    python desktop.py                # 启动桌面版
+    python desktop.py --selftest     # 离屏渲染截图自检（不弹窗）
+"""
+
+import base64
+import io
+import json
+import os
+import struct
+import sys
+import threading
+import time
+import uuid
+
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+# 打包为 exe 后：资源在 _MEIPASS 解包目录，可写数据（配置/图标/截图）放 exe 旁
+RES_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+DATA_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else APP_DIR
+
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+
+from PySide6.QtCore import QObject, QSize, QStandardPaths, QUrl, Qt, Signal, Slot, QTimer
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QPixmap
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWebEngineCore import QWebEngineScript
+from PySide6.QtWebEngineWidgets import QWebEngineView
+
+import server as S  # 复用服务内核（同进程）
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+APP_NAME = "LanShare"
+DEFAULT_PORT_RANGE = range(8765, 8776)
+
+
+# --------------------------------------------------------------------------- #
+# 开机自启（注册表）
+# --------------------------------------------------------------------------- #
+
+def _autostart_cmd():
+    if getattr(sys, "frozen", False):
+        return '"%s"' % sys.executable
+    exe = sys.executable
+    if exe.lower().endswith("python.exe"):
+        w = exe[:-4] + "w.exe"
+        if os.path.exists(w):
+            exe = w
+    return '"%s" "%s"' % (exe, os.path.abspath(__file__))
+
+
+def set_autostart(on):
+    if winreg is None:
+        return False
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE)
+        try:
+            if on:
+                winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, _autostart_cmd())
+            else:
+                try:
+                    winreg.DeleteValue(k, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        finally:
+            winreg.CloseKey(k)
+        return True
+    except Exception:
+        return False
+
+
+def get_autostart():
+    if winreg is None:
+        return False
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE)
+        try:
+            winreg.QueryValueEx(k, APP_NAME)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            winreg.CloseKey(k)
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# 图标生成（SVG -> PNG -> ICO）
+# --------------------------------------------------------------------------- #
+
+def _png_bytes(pixmap, size):
+    # PySide6 6.11+ 的 save 只接受 QIODevice（BytesIO 已不被支持）
+    from PySide6.QtCore import QBuffer, QIODevice
+    img = pixmap.toImage()
+    if img.size() != QSize(size, size):
+        img = img.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    buf = QBuffer()
+    buf.open(QIODevice.WriteOnly)
+    img.save(buf, "PNG")
+    return bytes(buf.data())
+
+
+def build_icons():
+    """从 favicon.svg 渲染出窗口/托盘图标，并生成 icon.ico（供打包用）。"""
+    svg = RES_DIR / "static" / "favicon.svg"
+    icon = QIcon()
+    try:
+        for s in (16, 32, 48, 64, 128, 256):
+            pix = QPixmap(str(svg))
+            if pix.isNull():
+                break
+            icon.addPixmap(pix.scaled(s, s, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    except Exception:
+        icon = QIcon()
+    # 写 icon.ico（PNG 内嵌格式）
+    try:
+        pngs = []
+        for s in (16, 32, 48, 64, 128, 256):
+            pix = QPixmap(str(svg))
+            if pix.isNull():
+                continue
+            pngs.append((s, _png_bytes(pix, s)))
+        if pngs:
+            header = struct.pack("<HHH", 0, 1, len(pngs))
+            entries = b""
+            offset = 6 + 16 * len(pngs)
+            for s, data in pngs:
+                w = 0 if s >= 256 else s
+                h = 0 if s >= 256 else s
+                entries += struct.pack("<BBBBHHII", w, h, 0, 0, 1, 32, len(data), offset)
+                offset += len(data)
+            ico = header + entries + b"".join(d for _, d in pngs)
+            (DATA_DIR / "icon.ico").write_bytes(ico)
+    except Exception:
+        pass
+    return icon
+
+
+# --------------------------------------------------------------------------- #
+# 原生桥（JS <-> Python）
+# --------------------------------------------------------------------------- #
+
+class NativeBridge(QObject):
+    def __init__(self, window):
+        super().__init__()
+        self.window = window
+
+    @Slot(result=str)
+    def pickFolder(self):
+        path = QFileDialog.getExistingDirectory(None, "选择要共享的文件夹")
+        return path or ""
+
+    @Slot(str, result=str)
+    def addFolder(self, path):
+        """桌面端拖拽/传入文件夹 -> 直接添加为公开共享。返回 JSON 字符串。"""
+        if not path or not os.path.isdir(path):
+            return json.dumps({"ok": False, "error": "文件夹路径无效"})
+        real = os.path.realpath(path)
+        name = os.path.basename(real.rstrip("\\/")) or "共享文件夹"
+        with S.app.lock:
+            for s in S.app.cfg["shares"]:
+                if os.path.normcase(os.path.realpath(s["path"])) == os.path.normcase(real):
+                    return json.dumps({"ok": True, "share": s["id"], "dup": True})
+            share = {
+                "id": uuid.uuid4().hex[:12],
+                "name": name,
+                "path": real,
+                "perm": "public",
+                "writable": False,
+            }
+            S.app.cfg["shares"].append(share)
+        S.app.save()  # 触发 config 广播，所有页面实时刷新
+        return json.dumps({"ok": True, "share": share["id"]})
+
+    @Slot(bool)
+    def setAutostart(self, on):
+        set_autostart(bool(on))
+
+    @Slot(result=bool)
+    def getAutostart(self):
+        return get_autostart()
+
+    @Slot(str)
+    def copyText(self, text):
+        """写入系统剪贴板（网页 navigator.clipboard 在 QtWebEngine 里无权限，由桌面端代写）。"""
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text or "")
+
+    @Slot()
+    def goHome(self):
+        self.window.go_home()
+
+    @Slot(str)
+    def openPeer(self, addr):
+        self.window.go_peer(addr)
+
+
+# --------------------------------------------------------------------------- #
+# 可拖拽 WebView（目录拖放 -> Qt 层拿到绝对路径）
+# --------------------------------------------------------------------------- #
+
+class DragWebView(QWebEngineView):
+    droppedFolders = Signal(list)
+
+    @staticmethod
+    def _local_dirs(mime):
+        if not mime.hasUrls():
+            return []
+        return [u.toLocalFile() for u in mime.urls()
+                if u.isLocalFile() and os.path.isdir(u.toLocalFile())]
+
+    def contextMenuEvent(self, e):
+        # 去掉 QtWebEngine 默认的英文右键菜单（对小白无用）
+        e.ignore()
+
+    def dragEnterEvent(self, e):
+        if self._local_dirs(e.mimeData()):
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if self._local_dirs(e.mimeData()):
+            e.acceptProposedAction()
+        else:
+            super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        dirs = self._local_dirs(e.mimeData())
+        if dirs:
+            self.droppedFolders.emit(dirs)
+            e.acceptProposedAction()
+        else:
+            super().dropEvent(e)
+
+
+# --------------------------------------------------------------------------- #
+# 主窗口
+# --------------------------------------------------------------------------- #
+
+class MainWindow(QMainWindow):
+    def __init__(self, local_url, icon):
+        super().__init__()
+        self.local_url = local_url
+        self.quitting = False
+        self.tray_announced = False
+
+        self.setWindowTitle("局域网快传 LAN Share")
+        self.setWindowIcon(icon)
+        self.resize(1100, 720)
+        self.setMinimumSize(900, 600)
+
+        self.view = DragWebView(self)
+        self.setCentralWidget(self.view)
+        self.view.droppedFolders.connect(self.on_folders_dropped)
+
+        # --- 注入：桌面标志 + 本地地址常量 + qwebchannel ---
+        page = self.view.page()
+        js = QWebEngineScript()
+        js.setName("lanshare_globals")
+        js.setInjectionPoint(QWebEngineScript.DocumentCreation)
+        js.setWorldId(QWebEngineScript.MainWorld)
+        js.setSourceCode(
+            "window.LANSHARE_DESKTOP = true;\n"
+            "window.LANSHARE_LOCAL_ORIGIN = %r;\n" % local_url
+        )
+        page.scripts().insert(js)
+
+        qjs = self._find_qwebchannel_js()
+        if qjs:
+            js2 = QWebEngineScript()
+            js2.setName("qwebchannel_loader")
+            js2.setInjectionPoint(QWebEngineScript.DocumentCreation)
+            js2.setWorldId(QWebEngineScript.MainWorld)
+            js2.setSourceCode(qjs.read_text(encoding="utf-8"))
+            page.scripts().insert(js2)
+
+        # --- WebChannel 桥 ---
+        self.bridge = NativeBridge(self)
+        self.channel = QWebChannel(page)
+        self.channel.registerObject("bridge", self.bridge)
+        page.setWebChannel(self.channel)
+
+        self.view.load(QUrl(local_url))
+
+    @staticmethod
+    def _find_qwebchannel_js():
+        local = RES_DIR / "static" / "qwebchannel.js"
+        if local.exists():
+            return local
+        try:
+            from PySide6 import QtWebChannel
+            root = Path(QtWebChannel.__file__).resolve().parent
+            for hit in root.rglob("qwebchannel.js"):
+                return hit
+        except Exception:
+            pass
+        return None
+
+    def on_folders_dropped(self, paths):
+        # 拖入目录 -> 不直接共享：把真实路径交给页面「添加共享」表单，
+        # 由用户确认设置后点「保存共享」才生效（避免误拖即共享）。
+        for p in paths:
+            if os.path.isdir(p):
+                real = os.path.realpath(p)
+                self._run_js("window.__lanshareDropPath && window.__lanshareDropPath(%s)"
+                             % json.dumps(real))
+                return
+
+    def _run_js(self, code):
+        self.view.page().runJavaScript(code)
+
+    def go_home(self):
+        self.view.setUrl(QUrl(self.local_url))
+
+    def go_peer(self, addr):
+        self.view.setUrl(QUrl("http://%s/" % addr))
+
+    def closeEvent(self, e):
+        if self.quitting:
+            e.accept()
+            return
+        e.ignore()
+        self.hide()
+        if not self.tray_announced and self.tray.isVisible():
+            self.tray_announced = True
+            self.tray.showMessage(
+                "局域网快传仍在运行",
+                "已最小化到系统托盘，右键托盘图标可退出。",
+                QSystemTrayIcon.Information, 2500)
+
+
+# --------------------------------------------------------------------------- #
+# 单实例锁
+# --------------------------------------------------------------------------- #
+
+class SingleInstance:
+    def __init__(self, name):
+        from PySide6.QtCore import QLockFile
+        import tempfile
+        self.lock = QLockFile(str(Path(tempfile.gettempdir()) / (name + ".lock")))
+        self.lock.setStaleLockTime(0)
+
+    def try_lock(self):
+        return self.lock.tryLock(100)
+
+
+# --------------------------------------------------------------------------- #
+# 入口
+# --------------------------------------------------------------------------- #
+
+def run():
+    import argparse
+    parser = argparse.ArgumentParser(description="局域网快传 · 桌面版")
+    parser.add_argument("--selftest", action="store_true", help="自检：真实窗口渲染 DOM 断言 + 截图（约 8 秒），不常驻")
+    parser.add_argument("--port", type=int, default=0, help="指定端口（默认自动选 8765-8775）")
+    args = parser.parse_args()
+
+    if args.selftest:
+        # 自检全程使用隔离数据目录，绝不读写用户真实配置 / 下载记录
+        import tempfile as _tf
+        _iso = Path(_tf.mkdtemp(prefix="lanshare_selftest_data_"))
+        S.DATA_DIR = _iso
+        S.CONFIG_FILE = _iso / "config.json"
+        S.DOWNLOAD_FILE = _iso / "downloads.json"
+        # server 模块在 import 时已实例化 App（模块级 app = App()），其内存里已加载
+        # 旧数据目录的配置/下载记录，必须重建实例，否则自检会读到用户真实数据
+        S.app = S.App()
+    else:
+        # 数据目录与桌面保持一致：源码运行 = 项目根；打包 exe = exe 所在目录。
+        # 不重定向的话，PyInstaller 打包后 server 会写进临时解压目录，退出即丢配置。
+        S.DATA_DIR = DATA_DIR
+        S.CONFIG_FILE = DATA_DIR / "config.json"
+        S.DOWNLOAD_FILE = DATA_DIR / "downloads.json"
+        S.app = S.App()
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("局域网快传")
+    app.setQuitOnLastWindowClosed(False)
+
+    if not args.selftest:
+        guard = SingleInstance("lanshare")
+        if not guard.try_lock():
+            QMessageBox.information(None, "局域网快传", "程序已在运行，请在托盘图标处打开。")
+            return 0
+
+    # 启动服务内核（自动挑选可用端口）。自检强制用高位端口，
+    # 彻底避开用户实际使用的 8765-8775，防止与正在运行的实例抢端口。
+    if args.selftest:
+        port = 19500 + (int.from_bytes(os.urandom(2), "big") % 400)
+    else:
+        port = args.port or next((p for p in DEFAULT_PORT_RANGE if not _port_busy(p)), 8765)
+    try:
+        svc = S.start_service(port, discovery_on=True)
+    except OSError as e:
+        QMessageBox.critical(None, "局域网快传", "服务启动失败：%s" % e)
+        return 1
+
+    scheme = "https" if svc["use_https"] else "http"
+    local_url = "%s://127.0.0.1:%d/" % (scheme, port)
+
+    icon = build_icons()
+    win = MainWindow(local_url, icon)
+
+    # 下载位置：每次下载弹保存对话框，让用户选择存到哪里（QtWebEngine 默认静默存"下载"目录）
+    try:
+        from PySide6.QtWebEngineWidgets import QWebEngineProfile
+
+        def _on_download(item):
+            default_dir = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+            suggested = os.path.join(default_dir, item.suggestedFileName() or "download")
+            path, _ = QFileDialog.getSaveFileName(win, "保存下载文件到…", suggested)
+            if path:
+                item.setPath(path)
+                item.accept()
+            else:
+                item.cancel()
+
+        QWebEngineProfile.defaultProfile().downloadRequested.connect(_on_download)
+    except Exception:
+        pass  # 极老版本降级：仍按默认目录下载
+
+    # --- 托盘 ---
+    tray = QSystemTrayIcon(icon, app)
+    win.tray = tray
+    tray.setToolTip("局域网快传 LAN Share")
+    menu = QMenu()
+    act_show = QAction("显示主界面", menu)
+    act_show.triggered.connect(lambda: _show_window(win))
+    act_quit = QAction("退出", menu)
+    act_quit.triggered.connect(lambda: _quit(win, app))
+    menu.addAction(act_show)
+    menu.addSeparator()
+    menu.addAction(act_quit)
+    tray.setContextMenu(menu)
+    tray.show()
+    win.tray_menu = menu
+
+    # 双击托盘图标 -> 唤出主界面
+    tray.activated.connect(lambda reason: _show_window(win)
+                           if reason == QSystemTrayIcon.DoubleClick else None)
+
+    if args.selftest:
+        return _selftest(app, win, svc)
+
+    win.show()
+
+    # 首次启动提示
+    QTimer.singleShot(1200, lambda: (
+        tray.showMessage("局域网快传已启动", "本机地址 %s\n手机扫码即可访问，窗口关闭后最小化到托盘。"
+                         % local_url, QSystemTrayIcon.Information, 4000)))
+
+    ret = app.exec()
+    svc["stop"].set()
+    svc["httpd"].server_close()
+    return ret
+
+
+def _port_busy(port):
+    import socket as _s
+    s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    try:
+        s.settimeout(0.6)
+        s.connect(("127.0.0.1", port))
+        return True  # 能连上 = 已有服务在听
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _show_window(win):
+    win.go_home()
+    win.show()
+    win.raise_()
+    win.activateWindow()
+
+
+def _quit(win, app):
+    win.quitting = True
+    win.tray.hide()
+    app.quit()
+
+
+def _selftest(app, win, svc):
+    """真实窗口渲染：DOM 断言 + 两张截图（共享视图 / 管理视图），随后自动退出。"""
+    port = svc["httpd"].server_address[1]
+
+    # 诊断：实例归属（隔离是否真正生效）
+    try:
+        _s_app = getattr(S, "app", None)
+        _h_app = getattr(S, "Handler", None).app if getattr(S, "Handler", None) else None
+        print("SELFTEST_APP_CHK port=%d S.app==Handler.app:%s S.app.shares:%d Handler.app.shares:%d"
+              % (port, _s_app is _h_app,
+                 len(_s_app.cfg["shares"]) if _s_app else -1,
+                 len(_h_app.cfg["shares"]) if _h_app else -1))
+    except Exception as _e:
+        print("SELFTEST_APP_CHK_ERR", _e)
+
+    # 隔离：清掉真实配置里的旧共享，只保留测试共享（避免自检点到真实目录）。
+    # 注意 server 模块在 import 时已实例化 App（模块级 app = App()），其内存里已加载
+    # 用户真实配置与下载记录，必须在此一并清空，否则自检会把真实数据当自己的。
+    with S.app.lock:
+        S.app.cfg["shares"] = []
+        S.app.downloads = {}
+        S.app.save()
+
+    # 造一个测试共享，便于截图有内容
+    tmp = Path(os.environ.get("TEMP", "/tmp")) / "lanshare_selftest"
+    tmp.mkdir(exist_ok=True)
+    (tmp / "示例文件.txt").write_text("hello lan share preview", encoding="utf-8")
+    (tmp / "photo.png").write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+    try:
+        win.bridge.addFolder(str(tmp))
+    except Exception:
+        pass
+
+    # 模拟一次局域网下载，验证管理页「下载记录」面板有真实内容
+    try:
+        import urllib.request as _ur
+        import urllib.parse as _up
+        with S.app.lock:
+            _sid = S.app.cfg["shares"][0]["id"]
+        _ur.urlopen("http://127.0.0.1:%d/api/download?share=%s&path=%s"
+                    % (port, _sid, _up.quote("/示例文件.txt")), timeout=5).read()
+    except Exception:
+        pass
+
+    # 加一个密码共享，验证编辑时明文密码回填
+    try:
+        import urllib.request as _ur
+        _req = _ur.Request("http://127.0.0.1:%d/api/shares" % port,
+                           data=json.dumps({"name": "密码测试", "path": str(tmp),
+                                            "perm": "password", "password": "test123"}).encode("utf-8"),
+                           headers={"Content-Type": "application/json"})
+        _ur.urlopen(_req, timeout=5).read()
+    except Exception:
+        pass
+
+    out = DATA_DIR / "_selftest_shares.png"
+    out2 = DATA_DIR / "_selftest_admin.png"
+    out3 = DATA_DIR / "_selftest_browse.png"
+    out4 = DATA_DIR / "_selftest_preview.png"
+    checks = []
+
+    def run_js_checks(tag):
+        code = (
+            "JSON.stringify({" +
+            " tag: %r," % tag +
+            " title: document.title," +
+            " speedBox: !!document.getElementById('speedBox')," +
+            " speedDown: document.getElementById('speedDown') && document.getElementById('speedDown').textContent," +
+            " deskVisible: !document.getElementById('desktopSettings') || !document.getElementById('desktopSettings').hidden," +
+            " dropZone: !!document.getElementById('dropZone')," +
+            " badgeWrite: !!document.querySelector('.badge-write')," +
+            " shareCards: document.querySelectorAll('.share-card').length," +
+            " hasShare: !!document.querySelector('.share-card')," +
+            " native: !!window.native," +
+            " qc: typeof window.QWebChannel," +
+            " qtType: typeof qt," +
+            " qtwct: !!qt.webChannelTransport," +
+            " btnUpload: !!document.getElementById('btnUpload')," +
+            " uploadList: !!document.getElementById('uploadList')," +
+            " dropHint: !!document.querySelector('.drop-hint')," +
+            " fileRows: document.querySelectorAll('.file-row').length," +
+            " fileNames: Array.prototype.slice.call(document.querySelectorAll('.row-name')).map(function(x){return x.textContent;}).join(',')," +
+            " previewVisible: !document.getElementById('previewModal') || !document.getElementById('previewModal').hidden," +
+            " txtText: (document.getElementById('txtView')||{}).textContent || ''," +
+            " imgLoaded: (function(){ var i=document.querySelector('#previewBody img'); return i ? (i.naturalWidth>0) : false; })()," +
+            " diag: (window.__diag ? JSON.stringify(window.__diag) : '')," +
+            " dlRows: document.querySelectorAll('#dlList .dl-row:not(.dl-head)').length," +
+            " dlText: (document.getElementById('dlList')||{}).textContent ? document.getElementById('dlList').textContent.slice(0,120) : ''," +
+            " acCards: document.querySelectorAll('#adminList .ac-card').length," +
+            " acOpen: (function(){ var b=document.querySelector('#adminList .ac-body'); return b ? !b.hidden : false; })()," +
+            " acPwdVal: (function(){ var v=''; document.querySelectorAll('#adminList input[data-f=pwd]').forEach(function(i){ if(i.value) v=i.value; }); return v; })()," +
+            " themeBtn: !!document.getElementById('themeBtn')," +
+            " themeMode: document.documentElement.dataset.theme || 'dark'," +
+            " advCard: !!document.getElementById('advCard')," +
+            " advAuto: !!document.getElementById('advAutostart')," +
+            " copyFn: typeof copyTextToClipboard === 'function' ? 'yes' : 'no'," +
+            " cfgPort: location.port || ''," +
+            " dlMore: !!document.querySelector('[data-dl-more]')," +
+            " dropPathVal: (document.getElementById('fPath') || {}).value || ''," +
+            " backHomeHidden: !document.getElementById('backHome') || document.getElementById('backHome').hidden," +
+            " bodyLen: document.body.innerHTML.length" +
+            "})"
+        )
+        win.view.page().runJavaScript(code, 0, lambda v: checks.append(v))
+
+    def snap(path):
+        # 让 WebEngine 合成完成再抓图（否则可能抓到全黑）
+        for _ in range(12):
+            QApplication.processEvents()
+            time.sleep(0.05)
+        win.grab().save(str(path))
+
+    def shot1():
+        run_js_checks("shares")
+        snap(out)
+        # 把测试共享设为可写（模拟用户在管理页勾选"可上传"）
+        with S.app.lock:
+            for s in S.app.cfg["shares"]:
+                s["writable"] = True
+        S.app.save()  # 广播 config，页面实时刷新徽标
+        win.view.page().runJavaScript(
+            "document.querySelector('.tab[data-view=admin]') && "
+            "document.querySelector('.tab[data-view=admin]').click()")
+        QTimer.singleShot(1800, shot2)
+
+    def shot2():
+        run_js_checks("admin")
+        snap(out2)
+        # 展开第一个共享卡片 + 切换亮色主题（交互验证）
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var h = document.querySelector('#adminList .ac-head'); if (h) h.click();"
+            " var t = document.getElementById('themeBtn'); if (t) t.click();"
+            " return 'ok'; })()")
+        QTimer.singleShot(700, shot2b)
+
+    def shot2b():
+        run_js_checks("admin2")
+        # 模拟桌面端拖入文件夹 -> 应自动展开「添加共享」并填入路径（保存才生效）
+        _drop_test = json.dumps(str(tmp))
+        win.view.page().runJavaScript(
+            "window.__lanshareDropPath && window.__lanshareDropPath(%s); 'ok'" % _drop_test)
+        QTimer.singleShot(900, shot2c)
+
+    def shot2c():
+        run_js_checks("admin3")
+        # 打开可写共享的浏览视图（验证上传 UI）
+        win.view.page().runJavaScript(
+            "document.querySelector('.tab[data-view=shares]') && "
+            "document.querySelector('.tab[data-view=shares]').click();"
+            "setTimeout(function(){ var b = document.querySelector('.share-card [data-act=open]'); if (b) b.click(); }, 300);")
+        QTimer.singleShot(2200, shot3)
+
+    def shot3():
+        run_js_checks("browse")
+        snap(out3)
+        # 点 txt 文件的「预览」（带错误捕获）
+        win.view.page().runJavaScript(
+            "(function(){ try {"
+            " var rows = document.querySelectorAll('.file-row[data-dir=\"0\"]');"
+            " var row = rows[0];"
+            " var btn = row ? row.querySelector('[data-act=preview]') : null;"
+            " window.__diag = {rows: rows.length, has: !!btn, act: btn ? btn.dataset.act : ''};"
+            " if (btn) btn.click();"
+            " return 'ok'; } catch(e){ window.__diag = {exc: e.message}; return 'err'; }"
+            "})()")
+        QTimer.singleShot(1200, shot4)
+
+    def shot4():
+        run_js_checks("preview_txt")
+        snap(out4)
+        # 点 txt 文件（第二个文件行）的「预览」
+        win.view.page().runJavaScript(
+            "(function(){ try {"
+            " var rows = document.querySelectorAll('.file-row[data-dir=\"0\"]');"
+            " var row = rows[1];"
+            " var btn = row ? row.querySelector('[data-act=preview]') : null;"
+            " window.__diag = {rows: rows.length, has: !!btn, name: row ? (row.querySelector('.row-name')||{}).textContent : ''};"
+            " if (btn) btn.click();"
+            " return 'ok'; } catch(e){ window.__diag = {exc: e.message}; return 'err'; }"
+            "})()")
+        QTimer.singleShot(1200, shot5)
+
+    def shot5():
+        run_js_checks("preview_img")
+        snap(out3)
+        QTimer.singleShot(600, shot6)
+
+    def shot6():
+        # 托盘双击唤出：先隐藏窗口，再模拟双击托盘图标，应恢复显示
+        win.hide()
+        win.tray.activated.emit(QSystemTrayIcon.DoubleClick)
+        QTimer.singleShot(500, shot7)
+
+    def shot7():
+        checks.append("TRAY_DOUBLE_CLICK visible=%s tray=%s" % (win.isVisible(), win.tray.isVisible()))
+        print("TRAY_CHECK %s" % checks[-1], flush=True)
+        QTimer.singleShot(300, finish)
+
+    def finish():
+        (DATA_DIR / "_selftest_dom.json").write_text(
+            json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("SELFTEST_DOM %s" % json.dumps(checks, ensure_ascii=False), flush=True)
+        print("SELFTEST_OK %s %s %s" % (out, out2, out3), flush=True)
+        app.quit()
+
+    def loaded(ok):
+        win.show()
+        QTimer.singleShot(2200 if ok else 300, shot1)
+
+    win.view.loadFinished.connect(loaded)
+    win.view.load(QUrl("http://127.0.0.1:%d/" % port))
+    app.exec()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())

@@ -1,0 +1,19 @@
+# 打包与构建产物（exe 约 206MB，不入库；构建命令记录在 README/CHANGELOG）
+dist/
+build/
+*.spec
+
+# Python 缓存与临时产物
+__pycache__/
+*.pyc
+
+# 自检/诊断临时产物
+_selftest_*.png
+_selftest_dom.json
+_selftest_out.txt
+_diag_*.py
+_exe_pid.txt
+
+# 运行期用户数据（含真实共享路径与下载记录，属隐私，不入库）
+config.json
+downloads.json
