@@ -58,6 +58,7 @@
     zip: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13v6"/><path d="M9 13h2l-2 3h2"/></svg>',
     back: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>',
     device: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>',
     copy: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     qr: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg>',
     drive: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.5" fill="currentColor"/></svg>',
@@ -218,8 +219,136 @@
     if (!state.config) return;
     if (state.view === "peers") return renderPeers();
     if (state.view === "admin") return renderAdmin();
+    if (state.view === "dlcenter") return renderDlCenter();
     if (state.share) return renderBrowse();
     renderShares();
+  }
+
+  /* ---------------- 下载中心（仅桌面版，本机下载历史） ---------------- */
+
+  // 下载中（实时增量，由桌面端推送）与已完成（持久化历史）
+  state.dlRunning = state.dlRunning || {};   // id -> {name, dir, size, received, total, ts}
+  state.dlHistory = state.dlHistory || [];   // 已完成列表
+  state.dlTab = state.dlTab || "running";    // 下载中心页签：running | done
+
+  // 桌面端 Qt 推送入口：进度高频更新只改对应条目，不做整表重渲染（防 UI 跳动）
+  window.__lanshareDlEvent = function (p) {
+    if (!p || !p.type) return;
+    if (p.type === "start" || p.type === "progress") {
+      const cur = state.dlRunning[p.id] || { name: p.name || "", dir: p.dir || "", size: p.size || 0, ts: p.ts || 0 };
+      cur.name = p.name || cur.name;
+      cur.dir = p.dir || cur.dir;
+      cur.size = p.size || cur.size;
+      cur.received = p.received || 0;
+      cur.total = p.total || 0;
+      cur.ts = p.ts || cur.ts;
+      state.dlRunning[p.id] = cur;
+      if (state.view === "dlcenter" && state.dlTab === "running") {
+        const row = document.querySelector('[data-dlr="' + p.id + '"]');
+        const bar = row && row.querySelector(".dlc-bar-fill");
+        const pct = row && row.querySelector(".dlc-pct");
+        if (bar && cur.total > 0) {
+          bar.style.width = Math.min(100, Math.round(cur.received / cur.total * 100)) + "%";
+          if (pct) pct.textContent = Math.round(cur.received / cur.total * 100) + "%";
+        }
+      }
+    } else if (p.type === "done") {
+      delete state.dlRunning[p.id];
+      loadLocalDownloads();   // 从桌面端拉最新历史（已完成列表刷新）
+    }
+  };
+
+  function loadLocalDownloads() {
+    if (!window.native) return;
+    window.native.getLocalDownloads(function (json) {
+      try {
+        state.dlHistory = JSON.parse(json || "[]");
+      } catch (e) { state.dlHistory = []; }
+      if (state.view === "dlcenter") renderDlCenter();
+    });
+  }
+
+  function renderDlCenter() {
+    const el = $("#view");
+    if (!el) return;
+    const running = Object.values(state.dlRunning);
+    const done = state.dlHistory || [];
+    const active = state.dlTab === "running";
+    let html = '<div class="section-head"><div><h2 class="section-title">下载中心</h2>' +
+      '<div class="section-sub">本机下载进度与历史（已下载文件可点击打开所在文件夹）</div></div></div>' +
+      '<div class="dlc-tabs"><button class="dlc-tab' + (active ? " is-active" : "") + '" data-dlc="running" type="button">下载中（' + running.length + '）</button>' +
+      '<button class="dlc-tab' + (!active ? " is-active" : "") + '" data-dlc="done" type="button">已完成（' + done.length + '）</button>' +
+      (!active ? '<button class="btn btn-ghost btn-sm" type="button" id="dlcClear">清空全部记录</button>' : "") + "</div>" +
+      '<div class="dlc-body">' + (active ? dlcRunningHtml(running) : dlcDoneHtml(done)) + "</div>";
+
+    // 固定容器高度 + 页签区独立渲染：切页签/清空只换列表体，头部与页签不跳动
+    const head = el.querySelector(".section-head");
+    const tabs = el.querySelector(".dlc-tabs");
+    el.innerHTML = html;
+
+    el.querySelectorAll("[data-dlc]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (state.dlTab === btn.dataset.dlc) return;
+        state.dlTab = btn.dataset.dlc;
+        renderDlCenter();
+      });
+    });
+    const clear = $("#dlcClear");
+    if (clear) {
+      clear.addEventListener("click", async () => {
+        if (!confirm("确定清空全部下载记录？\n只清除这里的历史列表，不影响已下载的文件。")) return;
+        try {
+          await window.native.clearLocalDownloads(function (ok) {});
+          loadLocalDownloads();
+          toast("已清空下载记录", "ok");
+        } catch (e) { toast("清空失败：" + e.message, "error"); }
+      });
+    }
+    // 委托：单条清除 / 打开所在文件夹
+    el.addEventListener("click", (ev) => {
+      const rm = ev.target.closest("[data-dlr-rm]");
+      if (rm) {
+        ev.stopPropagation();
+        const key = rm.dataset.dlrRm;
+        window.native.removeLocalDownload(key, function (ok) {
+          if (ok) loadLocalDownloads();
+        });
+        return;
+      }
+      const row = ev.target.closest("[data-dlr-open]");
+      if (row) window.native.openDownloadFolder(row.dataset.dlrOpen);
+    });
+  }
+
+  function dlcRunningHtml(running) {
+    if (!running.length) return '<div class="empty">没有正在下载的任务</div>';
+    let html = "";
+    for (const it of running) {
+      const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
+      html += '<div class="dlc-row" data-dlr="' + esc(it.id) + '">' +
+        '<span class="row-icon">' + I.download + "</span>" +
+        '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div>" +
+        '<div class="dlc-bar"><div class="dlc-bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="dlc-sub"><span class="dlc-pct">' + pct + "%</span>" +
+        (it.total > 0 ? '<span>' + fmtSize(it.received) + " / " + fmtSize(it.total) + "</span>" : "") +
+        '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span></div></div></div>";
+    }
+    return html;
+  }
+
+  function dlcDoneHtml(done) {
+    if (!done.length) return '<div class="empty">还没有下载完成记录</div>';
+    let html = '<div class="dlc-row dlc-head"><span></span><span>文件</span><span>大小</span><span>完成时间</span><span>保存位置</span><span></span></div>';
+    for (const it of done) {
+      html += '<div class="dlc-row dlc-done" data-dlr-open="' + esc(it.dir) + '" title="点击打开所在文件夹">' +
+        '<span class="row-icon">' + fileIcon(it.name) + "</span>" +
+        '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div></div>" +
+        '<span class="dlc-cell">' + (it.size ? fmtSize(it.size) : "--") + "</span>" +
+        '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
+        '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span>" +
+        '<button class="btn btn-ghost btn-sm" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
+    }
+    return html;
   }
 
   function renderHeader(cfg) {
@@ -230,6 +359,8 @@
     $("#addrText").textContent = addr;
     $("#localTag").hidden = !cfg.is_local;
     $("#adminTab").hidden = !cfg.is_local;
+    // 下载中心仅桌面版（本机 Qt 壳）显示：依赖桌面桥的下载事件与本地历史
+    $("#dlTab").hidden = !(cfg.is_local && window.native);
     $("#peerCount").textContent = state.peers.length ? String(state.peers.length) : "";
   }
 
@@ -380,6 +511,11 @@
         const path = row.dataset.path;
         if (isDir) {
           row.addEventListener("click", () => navigate(s.id, path));
+          // 右键：下载整个文件夹（ZIP），桌面浏览器可用；手机端保留「打包下载 ZIP」按钮兜底
+          row.addEventListener("contextmenu", (ev) => {
+            ev.preventDefault();
+            showCtxMenu(ev.clientX, ev.clientY, s.id, path);
+          });
         } else {
           row.querySelectorAll("[data-act]").forEach((btn) => {
             btn.addEventListener("click", (ev) => {
@@ -404,6 +540,32 @@
       }
       listEl.innerHTML = '<div class="empty">读取失败：' + esc(e.message) + "</div>";
     }
+  }
+
+  // 右键菜单：目前仅"下载整个文件夹（ZIP）"。浮层 fixed 定位，不占布局、不影响 UI 跳动。
+  let _ctxMenu = null;
+  function showCtxMenu(x, y, shareId, path) {
+    closeCtxMenu();
+    _ctxMenu = document.createElement("div");
+    _ctxMenu.className = "ctx-menu";
+    _ctxMenu.innerHTML =
+      '<button type="button" class="ctx-item" data-act="zip">' + I.zip + "下载整个文件夹（ZIP）</button>";
+    _ctxMenu.style.left = Math.min(x, window.innerWidth - 220) + "px";
+    _ctxMenu.style.top = Math.min(y, window.innerHeight - 70) + "px";
+    document.body.appendChild(_ctxMenu);
+    _ctxMenu.querySelector("[data-act]").addEventListener("click", () => {
+      location.href = "/api/zip?share=" + encodeURIComponent(shareId) +
+        "&path=" + encodeURIComponent(path);
+      closeCtxMenu();
+    });
+    setTimeout(() => {
+      document.addEventListener("click", closeCtxMenu, { once: true });
+      document.addEventListener("contextmenu", closeCtxMenu, { once: true });
+      document.addEventListener("scroll", closeCtxMenu, { once: true, capture: true });
+    }, 0);
+  }
+  function closeCtxMenu() {
+    if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
   }
 
   function renderPeers() {
@@ -518,10 +680,11 @@
       '<input class="input" value="' + esc(cfg.data_dir || "") + '" readonly></div>' +
       '<div class="field field-full"><label>下载位置（本机下载的文件保存到哪）</label>' +
       '<div class="path-row"><input class="input" id="dlDirVal" value="' + esc(cfg.download_dir || "") + '"' +
-      ' placeholder="未设置——下载时会提醒你先选位置" readonly>' +
+      ' placeholder="未设置——下载时会提醒你先选位置">' +
+      '<button class="btn btn-ghost" type="button" id="btnSaveDlDir">保存</button>' +
       '<button class="btn btn-ghost" type="button" id="btnPickDlDir">选择…</button>' +
       '<button class="btn btn-ghost" type="button" id="btnClearDlDir"' + (cfg.download_dir ? "" : " disabled") + '>清除</button></div>' +
-      '<div class="field-hint">设置后本机下载自动保存到这里，不再每次询问</div></div>' +
+      '<div class="field-hint">可直接粘贴路径，或点「选择…」；保存后本机下载自动存到这里，不再每次询问</div></div>' +
       '<div class="field field-full"><label class="check-line">下载记录已保留（共 ' +
       '<span id="dlCountHint" style="font-weight:600">—</span> 条）</label></div>' +
       "</div></div></div>";
@@ -554,7 +717,29 @@
       });
     }
 
-    // 下载位置：选择 / 清除（仅本机管理页可见）
+    // 下载位置：保存粘贴路径 / 选择 / 清除（仅本机管理页可见）
+    const btnSaveDl = $("#btnSaveDlDir");
+    if (btnSaveDl) {
+      const saveDlDir = async (dir) => {
+        if (!dir) { toast("请先填写下载位置", "error"); return; }
+        try {
+          const r = await api("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ download_dir: dir }),
+          });
+          if (r && r.ok) {
+            toast("下载位置已保存：" + dir, "ok");
+          } else toast((r && r.error) || "保存失败", "error");
+        } catch (e) {
+          toast("保存失败：" + e.message, "error");
+        }
+      };
+      btnSaveDl.addEventListener("click", () => saveDlDir($("#dlDirVal").value.trim()));
+      $("#dlDirVal").addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); saveDlDir($("#dlDirVal").value.trim()); }
+      });
+    }
     const btnPickDl = $("#btnPickDlDir");
     if (btnPickDl) {
       btnPickDl.addEventListener("click", async () => {
@@ -720,10 +905,11 @@
       const shown = showAll ? items : items.slice(0, limit);
       let html = '<div class="dl-row dl-head"><span class="dl-name">文件</span><span>共享</span><span>下载者</span><span>次数</span><span>最近下载</span></div>';
       for (const d of shown) {
+        const peerName = d.peer && d.peer !== d.ip ? d.peer : "未知设备";
         html += '<div class="dl-row">' +
           '<span class="dl-name" title="' + esc(d.path) + '">' + esc(d.name) + "</span>" +
           '<span>' + esc(d.share_name) + "</span>" +
-          '<span>' + esc(d.peer || d.ip) + ' <span class="dl-ip">' + esc(d.ip) + "</span></span>" +
+          '<span>' + esc(peerName) + '<span class="dl-ip">（' + esc(d.ip) + '）</span></span>' +
           '<span>' + d.count + "</span>" +
           '<span>' + fmtTime(d.last_ts) + "</span></div>";
       }
@@ -979,8 +1165,61 @@
       inner = '<audio src="' + src + '" controls autoplay></audio>';
     } else if (ext === "pdf") {
       inner = '<iframe src="' + src + '" style="width:100%;height:62vh;border:0;background:#fff"></iframe>';
+    } else if (ext === "md" && window.marked) {
+      // Markdown：渲染视图 / 原格式视图 切换（页签固定，切换只换内容不跳布局）
+      inner = '<div class="pv-tabs">' +
+        '<button class="pv-tab is-active" type="button" data-pv="render">渲染视图</button>' +
+        '<button class="pv-tab" type="button" data-pv="raw">原格式</button></div>' +
+        '<div id="pvBox" class="pv-box"></div>';
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", src);
+      let pvMode = "render";
+      const applyPv = () => {
+        const box = $("#pvBox");
+        const raw = (xhr.responseText || "").replace(/\r\n/g, "\n");
+        if (!box) return;
+        if (pvMode === "render") {
+          let html = raw;
+          try { html = window.marked.parse(raw); } catch (e) { html = esc(raw); }
+          html = html.replace(/<script[\s\S]*?<\/script>/gi, "")
+                     .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+                     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+                     .replace(/javascript:/gi, "");
+          box.className = "pv-box pv-md";
+          box.innerHTML = html;
+        } else {
+          box.className = "pv-box";
+          box.textContent = raw;
+        }
+      };
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 2) {
+          const len = parseInt(xhr.getResponseHeader("Content-Length") || "0", 10);
+          if (len > 2 * 1024 * 1024) {
+            xhr.abort();
+            const box = $("#pvBox");
+            if (box) box.textContent = "文件较大（" + fmtSize(len) + "），已停止渲染，请下载后查看。";
+          }
+        }
+      };
+      xhr.onload = () => {
+        applyPv();
+        const box = $("#pvBox");
+        if (box) box.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-pv]");
+          if (!btn || !box) return;
+          pvMode = btn.dataset.pv;
+          document.querySelectorAll("#pvBox + .pv-tabs .pv-tab, .pv-tabs .pv-tab").forEach(b => b.classList.toggle("is-active", b === btn));
+          applyPv();
+        });
+      };
+      xhr.onerror = () => {
+        const box = $("#pvBox");
+        if (box) box.textContent = "加载失败，请下载后查看。";
+      };
+      xhr.send();
     } else {
-      // 文本类（txt/md/log/…）：异步加载内容，超大文件自动停止
+      // 文本类（txt/log/…）：异步加载内容，超大文件自动停止
       inner = '<pre id="txtView" style="max-width:100%;max-height:62vh;overflow:auto;padding:14px;white-space:pre-wrap;font:12px/1.5 var(--mono)">加载中…</pre>';
       const xhr = new XMLHttpRequest();
       xhr.open("GET", src);
@@ -1079,6 +1318,8 @@
         state.path = "/";
       } else if (state.view === "peers") {
         refreshPeers();
+      } else if (state.view === "dlcenter") {
+        loadLocalDownloads();
       }
       render();
       if (state.view === "shares" && !state.share) {

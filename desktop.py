@@ -211,6 +211,28 @@ class NativeBridge(QObject):
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(text or "")
 
+    # ---- 下载中心（本机下载历史，与共享下载统计完全独立） ----
+    @Slot(result=str)
+    def getLocalDownloads(self):
+        return json.dumps(self.window._load_local_downloads())
+
+    @Slot(str, result=bool)
+    def removeLocalDownload(self, key):
+        return self.window._remove_local_download(key)
+
+    @Slot(result=bool)
+    def clearLocalDownloads(self):
+        return self.window._clear_local_downloads()
+
+    @Slot(str)
+    def openDownloadFolder(self, dir):
+        """打开下载文件所在文件夹（Windows 资源管理器）。"""
+        try:
+            if dir and os.path.isdir(dir):
+                os.startfile(dir)  # noqa
+        except Exception:
+            pass
+
     @Slot()
     def goHome(self):
         self.window.go_home()
@@ -341,6 +363,41 @@ class MainWindow(QMainWindow):
     def go_peer(self, addr):
         self.view.setUrl(QUrl("http://%s/" % addr))
 
+    # ---- 本机下载历史（下载中心），持久化到 data_dir/downloads_local.json ----
+    def _local_dl_file(self):
+        # 跟随 server 数据目录：selftest 隔离时也隔离，不污染真实数据
+        return Path(getattr(S, "DATA_DIR", DATA_DIR)) / "downloads_local.json"
+
+    def _load_local_downloads(self):
+        try:
+            p = self._local_dl_file()
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                return data.get("items", [])
+        except Exception:
+            pass
+        return []
+
+    def _save_local_downloads(self, items):
+        try:
+            p = self._local_dl_file()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"v": 1, "items": items}, ensure_ascii=False),
+                         encoding="utf-8")
+            return True
+        except Exception:
+            return False
+
+    def _remove_local_download(self, key):
+        items = self._load_local_downloads()
+        left = [it for it in items if it.get("key") != key]
+        if len(left) != len(items):
+            return self._save_local_downloads(left)
+        return False
+
+    def _clear_local_downloads(self):
+        return self._save_local_downloads([])
+
     def closeEvent(self, e):
         if self.quitting:
             e.accept()
@@ -430,6 +487,17 @@ def run():
     # 下载位置：若已配置 download_dir 则静默存到该目录；未配置则弹窗让用户选择并自动记住
     try:
         from PySide6.QtWebEngineWidgets import QWebEngineProfile
+        from PySide6.QtCore import QByteArray
+
+        _dl_running = {}   # id -> {"name", "dir", "size"}
+
+        def _push_dl(payload):
+            try:
+                win.view.page().runJavaScript(
+                    "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
+                    json.dumps(payload, ensure_ascii=False) + ")")
+            except Exception:
+                pass
 
         def _on_download(item):
             from PySide6.QtWidgets import QFileDialog
@@ -446,6 +514,48 @@ def run():
             path = os.path.join(dl_dir, item.suggestedFileName() or "download")
             item.setPath(path)
             item.accept()
+
+            # ---- 下载中心：进度实时推送 + 完成后写入本机历史 ----
+            fname = item.suggestedFileName() or "download"
+            item_id = str(time.time()).replace(".", "")[:14]
+            _dl_running[item_id] = {"name": fname, "dir": dl_dir,
+                                    "size": item.totalBytes() or 0}
+            _push_dl({"type": "start", "id": item_id, "name": fname,
+                      "dir": dl_dir, "size": item.totalBytes() or 0,
+                      "ts": time.time()})
+
+            def _on_progress(received, total):
+                info = _dl_running.get(item_id)
+                if not info:
+                    return
+                _push_dl({"type": "progress", "id": item_id,
+                          "received": int(received), "total": int(total),
+                          "ts": time.time()})
+
+            def _on_finished():
+                info = _dl_running.pop(item_id, None) or {}
+                fname2 = info.get("name") or fname
+                ddir = info.get("dir") or dl_dir
+                size = info.get("size") or item.totalBytes() or 0
+                full = item.path() or os.path.join(ddir, fname2)
+                # 去重：同一路径只保留一条（更新时间）
+                items = win._load_local_downloads()
+                key = os.path.normcase(os.path.realpath(full))
+                items = [it for it in items if it.get("key") != key]
+                items.insert(0, {
+                    "key": key, "name": fname2, "size": size,
+                    "dir": ddir, "path": full, "ts": time.time(),
+                })
+                win._save_local_downloads(items[:200])
+                _push_dl({"type": "done", "id": item_id, "name": fname2,
+                          "dir": ddir, "path": full, "size": size,
+                          "ts": time.time()})
+
+            try:
+                item.downloadProgress.connect(_on_progress)
+                item.finished.connect(_on_finished)
+            except Exception:
+                pass
 
         QWebEngineProfile.defaultProfile().downloadRequested.connect(_on_download)
     except Exception:
@@ -540,6 +650,7 @@ def _selftest(app, win, svc):
     tmp = Path(os.environ.get("TEMP", "/tmp")) / "lanshare_selftest"
     tmp.mkdir(exist_ok=True)
     (tmp / "示例文件.txt").write_text("hello lan share preview", encoding="utf-8")
+    (tmp / "说明文档.md").write_text("# 标题\n\n- 列表项一\n- 列表项二\n\n**加粗**与`行内代码`", encoding="utf-8")
     (tmp / "photo.png").write_bytes(
         base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
     try:
@@ -611,6 +722,13 @@ def _selftest(app, win, svc):
             " advAuto: !!document.getElementById('advAutostart')," +
             " dlDirEl: !!document.getElementById('dlDirVal')," +
             " pickBtn: !!document.getElementById('btnPickDlDir')," +
+            " saveDlBtn: !!document.getElementById('btnSaveDlDir')," +
+            " dlTabVisible: !document.getElementById('dlTab') || !document.getElementById('dlTab').hidden," +
+            " dlcFn: (typeof window.__lanshareDlEvent === 'function') ? 'yes' : 'no'," +
+            " dlcTabs: document.querySelectorAll('.dlc-tabs').length," +
+            " dlcRows: document.querySelectorAll('.dlc-row').length," +
+            " pvTabs: document.querySelectorAll('.pv-tabs').length," +
+            " pvMd: document.querySelectorAll('.pv-md').length," +
             " copyFn: typeof copyTextToClipboard === 'function' ? 'yes' : 'no'," +
             " pickDirFn: (window.native && typeof window.native.pickDownloadDir === 'function') ? 'yes' : 'no'," +
             " cfgPort: location.port || ''," +
@@ -703,6 +821,51 @@ def _selftest(app, win, svc):
     def shot5():
         run_js_checks("preview_img")
         snap(out3)
+        QTimer.singleShot(600, shot5a)
+
+    def shot5a():
+        # Markdown 预览：应出现「渲染视图/原格式」页签且渲染视图有排版内容
+        win.view.page().runJavaScript(
+            "(function(){ try {"
+            " var rows = document.querySelectorAll('.file-row[data-dir=\"0\"]');"
+            " var row = null;"
+            " rows.forEach(function(r){ if((r.querySelector('.row-name')||{}).textContent.indexOf('.md')>0) row=r; });"
+            " window.__diag = {rows: rows.length, mdRow: !!row, name: row ? (row.querySelector('.row-name')||{}).textContent : ''};"
+            " if (row) row.querySelector('[data-act=preview]').click();"
+            " return 'ok'; } catch(e){ window.__diag = {exc: e.message}; return 'err'; }"
+            "})()")
+        QTimer.singleShot(1200, shot5a2)
+
+    def shot5a2():
+        run_js_checks("preview_md")
+        snap(out4)
+        # 关闭预览弹窗，再切换「下载中心」视图
+        win.view.page().runJavaScript(
+            "(function(){ var m = document.getElementById('previewModal'); if (m) m.hidden = true;"
+            " var t = document.querySelector('.tab[data-view=dlcenter]'); if (t) t.click(); return 'ok'; })()")
+        QTimer.singleShot(700, shot5c)
+
+    def shot5b():
+        # 下载中心：本机历史读写（隔离数据目录）+ 切换到下载中心视图
+        try:
+            win._save_local_downloads([{"key": "K1", "name": "测试文件.zip", "size": 123,
+                                        "dir": str(tmp), "path": str(tmp / "a.zip"), "ts": time.time()}])
+            n1 = len(win._load_local_downloads())
+            ok_rm = win._remove_local_download("K1")
+            n2 = len(win._load_local_downloads())
+            ok_clear = win._clear_local_downloads()
+            n3 = len(win._load_local_downloads())
+            print("DL_LOCAL_API save1=%d rm=%s(%d) clear=%s(%d)" % (n1, ok_rm, n2, ok_clear, n3), flush=True)
+        except Exception as e:
+            print("DL_LOCAL_API_ERR", repr(e), flush=True)
+        win.view.page().runJavaScript(
+            "document.querySelector('.tab[data-view=dlcenter]') && "
+            "document.querySelector('.tab[data-view=dlcenter]').click()")
+        QTimer.singleShot(700, shot5c)
+
+    def shot5c():
+        run_js_checks("dlcenter")
+        snap(out4)
         QTimer.singleShot(600, shot6)
 
     def shot6():

@@ -39,12 +39,13 @@
     <button class="tab is-active" data-view="shares" type="button">共享文件夹</button>
     <button class="tab" data-view="peers" type="button">局域网设备<span class="count" id="peerCount"></span></button>
     <button class="tab" data-view="admin" id="adminTab" type="button" hidden>管理</button>
+    <button class="tab" data-view="dlcenter" id="dlTab" type="button" hidden>下载中心</button>
   </nav>
 
   <main id="view" class="view"></main>
 </div>
 
-<footer class="foot">局域网快传 v1.0 · 组播实时发现 · 数据不出局域网 · 无互联网依赖</footer>
+<footer class="foot">局域网快传 v2.5 · 组播实时发现 · 数据不出局域网 · 无互联网依赖</footer>
 
 <!-- 密码弹窗 -->
 <div class="modal" id="pwdModal" hidden>
@@ -102,6 +103,7 @@
 <div id="toasts" class="toasts"></div>
 
 <script src="/static/bus.js"></script>
+<script src="/static/marked.min.js"></script>
 <script src="/static/qrcode.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
