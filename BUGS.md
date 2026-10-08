@@ -87,6 +87,12 @@
 
 ## 工程环境（Windows 专项，贯穿全程）
 
+### B-13 PyInstaller -F 单文件 exe 在本机启动卡死/崩溃（2026-10-08，交付级）
+- **现象**：v2.4 单文件 exe（206MB）启动 4-5 分钟仍不监听端口，最终进程消失；源码跑与目录模式（-D）40 秒内正常。
+- **根因**：`-F` 单文件模式每次启动需把 206MB 解压到 %TEMP%\_MEI*，Windows Defender 实时扫描新大 exe 时严重拖慢并可能误杀；v2.3 单文件能跑属"Defender 已信任"的侥幸。
+- **解决**：改为 **-D 目录模式**打包（dist/局域网快传/，exe + 依赖 + static），实测 45 秒正常；交付整体目录打 zip。
+- **防复现**：交付前 exe 实测启动到"监听端口"为止（冒烟级验收）；打包命令固定为 `py -m PyInstaller -D --add-data "static;static" --icon icon.ico --name "局域网快传" desktop.py --noconfirm`；不要改回 -F 单文件。
+
 ### B-01 Windows PowerShell 编码与转义（长期坑）
 - **现象**：中文乱码、内联 `py -c` 报 ParseException、git 输出被吞。
 - **根因**：Bash 工具实际走 PowerShell：UTF-8 文本被按 cp936 重编码；`&&`/`$(...)`/引号嵌套失效；git 的 stderr 被包装成 NativeCommandError。
