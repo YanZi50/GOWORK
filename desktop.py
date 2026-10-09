@@ -59,14 +59,15 @@ DEFAULT_PORT_RANGE = range(8765, 8776)
 # --------------------------------------------------------------------------- #
 
 def _autostart_cmd():
+    # 自启带 --minimized：开机后直接进托盘静默运行，不弹主窗口
     if getattr(sys, "frozen", False):
-        return '"%s"' % sys.executable
+        return '"%s" --minimized' % sys.executable
     exe = sys.executable
     if exe.lower().endswith("python.exe"):
         w = exe[:-4] + "w.exe"
         if os.path.exists(w):
             exe = w
-    return '"%s" "%s"' % (exe, os.path.abspath(__file__))
+    return '"%s" "%s" --minimized' % (exe, os.path.abspath(__file__))
 
 
 def set_autostart(on):
@@ -778,7 +779,9 @@ def run():
     if args.selftest:
         return _selftest(app, win, svc)
 
-    win.show()
+    # 自启静默：--minimized 时不显示主窗口，直接托盘后台运行（手动双击启动则正常显示）
+    if "--minimized" not in sys.argv:
+        win.show()
 
     # 首次启动提示
     QTimer.singleShot(1200, lambda: (
@@ -1205,6 +1208,8 @@ def _selftest(app, win, svc):
         QTimer.singleShot(300, finish)
 
     def finish():
+        _a = _autostart_cmd()
+        checks.append("AUTOSTART minimized=%s cmd=%s" % ("--minimized" in _a, _a))
         (DATA_DIR / "_selftest_dom.json").write_text(
             json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
         print("SELFTEST_DOM %s" % json.dumps(checks, ensure_ascii=False), flush=True)
