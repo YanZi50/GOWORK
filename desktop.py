@@ -946,6 +946,7 @@ def _selftest(app, win, svc):
             " dlMore: !!document.querySelector('[data-dl-more]')," +
             " dropPathVal: (document.getElementById('fPath') || {}).value || ''," +
             " backHomeHidden: !document.getElementById('backHome') || document.getElementById('backHome').hidden," +
+            " dlcRefresh: !!document.getElementById('dlcRefresh')," +
             " bodyLen: document.body.innerHTML.length" +
             "})"
         )
@@ -1181,7 +1182,16 @@ def _selftest(app, win, svc):
     def shot5c():
         run_js_checks("dlcenter")
         snap(out4)
-        QTimer.singleShot(600, shot6)
+        # 切到「已完成」页签：验证「刷新」按钮存在（清空记录左侧）
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var t = document.querySelector('.dlc-tab[data-dlc=done]'); if (t) t.click();"
+            " return 'ok'; })()", 0, lambda v: None)
+        QTimer.singleShot(500, shot5d)
+
+    def shot5d():
+        run_js_checks("dlcenter_done")
+        QTimer.singleShot(300, shot6)
 
     def shot6():
         # 托盘双击唤出：先隐藏窗口，再模拟双击托盘图标，应恢复显示

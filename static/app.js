@@ -341,7 +341,8 @@
     const restore = btn.dataset.dlRestore;
     delete btn.dataset.dlRestore;
     btn.classList.remove("is-busy");
-    btn.innerHTML = restore || (I.download + '<span class="btn-label">下载</span>');
+    if (!restore) { btn.remove(); return; }  // 右键菜单的临时按钮（原本无内容）：完成后直接移除，不残留"下载"按钮
+    btn.innerHTML = restore;
   }
 
   // 顶栏「下载中心」红色角标：实时显示正在下载的任务数
@@ -377,7 +378,8 @@
       '<div class="section-sub">本机下载进度与历史（已下载文件可点击打开所在文件夹）</div></div></div>' +
       '<div class="dlc-tabs"><button class="dlc-tab' + (active ? " is-active" : "") + '" data-dlc="running" type="button">下载中（' + running.length + '）</button>' +
       '<button class="dlc-tab' + (!active ? " is-active" : "") + '" data-dlc="done" type="button">已完成（' + done.length + '）</button>' +
-      (!active ? '<button class="btn btn-ghost btn-sm" type="button" id="dlcClear">清空全部记录</button>' : "") + "</div>" +
+      (!active ? '<button class="btn btn-ghost btn-sm" type="button" id="dlcRefresh">⟳ 刷新</button>' +
+        '<button class="btn btn-ghost btn-sm" type="button" id="dlcClear">清空全部记录</button>' : "") + "</div>" +
       '<div class="dlc-body">' + (active ? dlcRunningHtml(running) : dlcDoneHtml(done)) + "</div>";
 
     // 固定容器高度 + 页签区独立渲染：切页签/清空只换列表体，头部与页签不跳动
@@ -392,6 +394,13 @@
         renderDlCenter();
       });
     });
+    const refresh = $("#dlcRefresh");
+    if (refresh) {
+      refresh.addEventListener("click", () => {
+        loadLocalDownloads();
+        toast("已刷新", "ok");
+      });
+    }
     const clear = $("#dlcClear");
     if (clear) {
       clear.addEventListener("click", async () => {
