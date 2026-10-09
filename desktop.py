@@ -1047,6 +1047,12 @@ def _selftest(app, win, svc):
 
     def shot2c():
         run_js_checks("admin3")
+        # 主题持久化断言：admin2 已点主题切换按钮（dark->light），config.json 应已写入 theme=light
+        try:
+            with S.app.lock:
+                checks.append("THEME_CFG %s" % S.app.cfg.get("theme"))
+        except Exception as e:
+            checks.append("THEME_CFG_ERR %r" % (e,))
         # 保存共享（触发 renderAdmin 全量重渲染）→ 高级设置卡应保持展开（折叠状态持久化）
         win.view.page().runJavaScript(
             "(function(){ var b=document.querySelector('#adminList [data-ac-save]'); if (b) b.click(); return 'ok'; })()")

@@ -741,6 +741,7 @@ class Handler(BaseHTTPRequestHandler):
             "addresses": get_local_ips(),
             "version": VERSION,
             "speed_limit_kb": int(self.app.cfg.get("speed_limit_kb", 0)),
+            "theme": self.app.cfg.get("theme", "dark"),
             "shares": shares,
         }
         if local:
@@ -1307,6 +1308,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.app.cfg["download_dir"] = dl
             changed.append("download_dir")
+        if "theme" in body:
+            t = str(body.get("theme", "")).strip()
+            if t not in ("dark", "light"):
+                self._json(400, {"error": "主题无效"})
+                return
+            self.app.cfg["theme"] = t
+            changed.append("theme")
         if not changed:
             self._json(400, {"error": "没有可更新的配置项"})
             return

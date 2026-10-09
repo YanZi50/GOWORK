@@ -1,0 +1,130 @@
+﻿py : 103 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.8
+所在位置 行:1 字符: 41
++ ... \lan-share; py -m PyInstaller -D --clean --add-data "static;static" - ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (103 INFO: PyIns...b hooks: 2026.8:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+103 INFO: Python: 3.14.6
+123 INFO: Platform: Windows-11-10.0.26200-SP0
+124 INFO: Python environment: C:\Users\admin\AppData\Local\Python\pythoncore-3.14-64
+124 INFO: wrote D:\Myfolder\doubao\GOWORK\lan-share\局域网快传.spec
+126 INFO: Removing temporary files and cleaning cache in C:\Users\admin\AppData\Local\pyinstaller
+143 INFO: Module search paths (PYTHONPATH):
+['D:\\Myfolder\\doubao\\GOWORK\\lan-share',
+ 'D:\\Doubao\\app\\task-mode-resource\\python-packages',
+ 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.zip',
+ 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs',
+ 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib',
+ 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64',
+ 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages',
+ 'D:\\Myfolder\\doubao\\GOWORK\\lan-share']
+353 INFO: Appending 'datas' from .spec
+354 INFO: checking Analysis
+354 INFO: Building Analysis because Analysis-00.toc is non existent
+354 INFO: Looking for Python shared library...
+354 INFO: Using Python shared library: C:\Users\admin\AppData\Local\Python\pythoncore-3.14-64\python314.dll
+354 INFO: Running Analysis Analysis-00.toc
+354 INFO: Target bytecode optimization level: 0
+354 INFO: Initializing module dependency graph...
+355 INFO: Initializing module graph hook caches...
+375 INFO: Analyzing modules for base_library.zip ...
+1156 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.
+14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+1702 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythonco
+re-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+2020 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-
+3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4154 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore
+-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4169 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3
+.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4673 INFO: Caching module dependency graph...
+4710 INFO: Analyzing D:\Myfolder\doubao\GOWORK\lan-share\desktop.py
+4868 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncor
+e-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4938 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythonco
+re-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4946 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore
+-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4968 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore
+-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+5123 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythonco
+re-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+5532 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\
+pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+8521 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pyt
+honcore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+12455 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pyt
+honcore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+25066 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\
+\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+26966 INFO: Processing standard module hook 'hook-PySide6.QtWebChannel.py' from 'C:\\Users\\admin\\AppData\\Local\\Pyth
+on\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+27331 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineCore.py' from 'C:\\Users\\admin\\AppData\\Local\\P
+ython\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+28231 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineWidgets.py' from 'C:\\Users\\admin\\AppData\\Local
+\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+28564 INFO: Processing standard module hook 'hook-PySide6.QtPrintSupport.py' from 'C:\\Users\\admin\\AppData\\Local\\Py
+thon\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+29090 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\python
+core-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+29275 INFO: Processing module hooks (post-graph stage)...
+29532 INFO: Processing standard module hook 'hook-PySide6.QtQuick.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\p
+ythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+34473 INFO: Processing standard module hook 'hook-PySide6.QtOpenGL.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\
+pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+37376 INFO: Processing standard module hook 'hook-PySide6.QtQml.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pyt
+honcore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+40046 WARNING: QtLibraryInfo(PySide6): QML plugin binary 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\
+\Lib\\site-packages\\PySide6\\qml\\Qt\\labs\\assetdownloader\\qmlassetdownloaderprivateplugin.dll' does not exist!
+57269 INFO: Processing standard module hook 'hook-PySide6.QtPositioning.py' from 'C:\\Users\\admin\\AppData\\Local\\Pyt
+hon\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+57964 INFO: Processing standard module hook 'hook-PySide6.QtQuickWidgets.py' from 'C:\\Users\\admin\\AppData\\Local\\Py
+thon\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+58439 INFO: Performing binary vs. data reclassification (2786 entries)
+59234 INFO: Looking for ctypes DLLs
+59256 INFO: Analyzing run-time hooks ...
+59258 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.1
+4-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+59262 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.1
+4-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+59266 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\admin\\AppData\\Local\\Pytho
+n\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+59269 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\admin\\AppData\\Local\\Python\\py
+thoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+59337 INFO: Creating base_library.zip...
+59359 INFO: Looking for dynamic libraries
+59517 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14
+-64\\Lib\\site-packages\\shiboken6']
+59517 INFO: Extra DLL search directories (PATH): ['C:\\Users\\admin\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\s
+ite-packages\\PySide6']
+65881 INFO: Warnings written to D:\Myfolder\doubao\GOWORK\lan-share\build\局域网快传\warn-局域网快传.txt
+65900 INFO: Graph cross-reference written to D:\Myfolder\doubao\GOWORK\lan-share\build\局域网快传\xref-局域网快传.html
+66001 INFO: checking PYZ
+66002 INFO: Building PYZ because PYZ-00.toc is non existent
+66002 INFO: Building PYZ (ZlibArchive) D:\Myfolder\doubao\GOWORK\lan-share\build\局域网快传\PYZ-00.pyz
+66133 INFO: Building PYZ (ZlibArchive) D:\Myfolder\doubao\GOWORK\lan-share\build\局域网快传\PYZ-00.pyz completed successfull
+y.
+66141 INFO: checking PKG
+66141 INFO: Building PKG because PKG-00.toc is non existent
+66141 INFO: Building PKG (CArchive) 局域网快传.pkg
+66165 INFO: Building PKG (CArchive) 局域网快传.pkg completed successfully.
+66166 INFO: Bootloader C:\Users\admin\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\PyInstaller\bootloader\
+Windows-64bit-intel\run.exe
+66166 INFO: checking EXE
+66166 INFO: Building EXE because EXE-00.toc is non existent
+66166 INFO: Building EXE from EXE-00.toc
+66166 INFO: Copying bootloader EXE to D:\Myfolder\doubao\GOWORK\lan-share\build\局域网快传\局域网快传.exe
+66174 INFO: Copying icon to EXE
+66179 INFO: Copying 0 resources to EXE
+66179 INFO: Embedding manifest in EXE
+66184 INFO: Appending PKG archive to EXE
+66186 INFO: Fixing EXE headers
+66232 INFO: Building EXE from EXE-00.toc completed successfully.
+66250 INFO: checking COLLECT
+66250 INFO: Building COLLECT because COLLECT-00.toc is non existent
+66250 INFO: Removing dir D:\Myfolder\doubao\GOWORK\lan-share\dist\局域网快传
+69801 INFO: Building COLLECT COLLECT-00.toc
+72988 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+73077 INFO: Build complete! The results are available in: D:\Myfolder\doubao\GOWORK\lan-share\dist

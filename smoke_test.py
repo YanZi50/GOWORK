@@ -92,6 +92,15 @@ def main():
         check("config 暴露 writable", s.get("writable") is True, json.dumps(s))
         check("config 暴露 speed_limit_kb", cfg.get("speed_limit_kb") == 0)
 
+        # 2a) 主题持久化：默认 dark -> 保存 light -> 回读 light -> 恢复 dark
+        check("theme_default_dark", cfg.get("theme", "dark") == "dark", "theme=%r" % cfg.get("theme"))
+        st, r = api("/api/config", data=b'{"theme":"light"}', ctype="application/json")
+        check("theme_save_200", st == 200 and (r or {}).get("ok") is True, "st=%d r=%s" % (st, r))
+        _, cfg2 = api("/api/config")
+        check("theme_readback_light", cfg2.get("theme") == "light", "theme=%r" % cfg2.get("theme"))
+        st, _ = api("/api/config", data=b'{"theme":"dark"}', ctype="application/json")
+        check("theme_restore_200", st == 200, "st=%d" % st)
+
         # 3) 列表可见
         st, r = api("/api/list?share=%s&path=/" % share_id)
         check("list 200 且含 hello.txt", st == 200 and any(e["name"] == "hello.txt" for e in r["entries"]), str(r)[:200])

@@ -1707,12 +1707,27 @@
   function bindTheme() {
     const btn = $("#themeBtn");
     if (!btn) return;
+    // 先按 localStorage 快速应用（避免闪默认色）；config 加载后以 config.json 为准（持久化，跟随文件夹迁移）
     let cur = localStorage.getItem("lanshare_theme") || "dark";
     applyTheme(cur);
+    Bus.on("config:loaded", (cfg) => {
+      if (cfg && cfg.theme && cfg.theme !== cur) {
+        cur = cfg.theme;
+        localStorage.setItem("lanshare_theme", cur);
+        applyTheme(cur);
+      }
+    });
     btn.addEventListener("click", () => {
       cur = cur === "dark" ? "light" : "dark";
       localStorage.setItem("lanshare_theme", cur);
       applyTheme(cur);
+      try {
+        api("/api/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: cur }),
+        });
+      } catch (e) { /* 保存失败不影响本次切换 */ }
     });
   }
 
