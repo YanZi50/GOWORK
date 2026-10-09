@@ -852,6 +852,14 @@ def _selftest(app, win, svc):
     except Exception:
         pass
 
+    # 再补 4 个共享（共 6 个）——复现用户"共享多 + 网格 3 列"场景，验证切换页面卡片网格不跳动
+    for _i in range(4):
+        with S.app.lock:
+            S.app.cfg["shares"].append({
+                "id": uuid.uuid4().hex[:8], "name": "布局测试%d" % _i,
+                "path": str(tmp), "perm": "public", "password": "", "writable": False})
+        S.app.save()
+
     # 模拟一次局域网下载，验证管理页「下载记录」面板有真实内容。
     # 设置 download_dir → 本机下载被 server 接管复制到该目录（验证落盘路径）。
     _dl_zone = tmp / "保存区"
@@ -950,6 +958,52 @@ def _selftest(app, win, svc):
     def shot1():
         run_js_checks("shares")
         snap(out)
+        # scrollbar-gutter 是否生效：固定滚动条槽位，避免切换页面内容区宽度抖动
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var a = document.createElement('div'); a.style.cssText='overflow-y:scroll;width:200px;scrollbar-gutter:stable;';"
+            " var b = document.createElement('div'); b.style.cssText='overflow-y:auto;width:200px;scrollbar-gutter:stable;';"
+            " document.body.appendChild(a); document.body.appendChild(b);"
+            " var r = JSON.stringify({scrollW: 200 - a.clientWidth, autoW: b.clientWidth});"
+            " a.remove(); b.remove(); return r; })()",
+            0, lambda v: checks.append("GUTTER " + str(v)))
+        # 布局稳定性：打开共享 -> 返回 -> 切管理 -> 切回，卡片网格列数与宽度必须一致
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var g = document.querySelector('.card-grid');"
+            " window.__lay0 = g ? JSON.stringify({cols: getComputedStyle(g).gridTemplateColumns.split(' ').length,"
+            " vw: document.getElementById('view').clientWidth}) : 'none';"
+            " var b = document.querySelector('.share-card [data-act=open]'); if (b) b.click();"
+            " return 'ok'; })()",
+            0, lambda v: None)
+        QTimer.singleShot(800, shot1b)
+
+    def shot1b():
+        # 返回共享列表后记录布局；随后切到管理页
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var home = document.getElementById('btnHome'); if (home) home.click();"
+            " var g = document.querySelector('.card-grid');"
+            " window.__lay1 = g ? JSON.stringify({cols: getComputedStyle(g).gridTemplateColumns.split(' ').length,"
+            " vw: document.getElementById('view').clientWidth}) : 'none';"
+            " var t = document.querySelector('.tab[data-view=admin]'); if (t) t.click();"
+            " return 'ok'; })()",
+            0, lambda v: None)
+        QTimer.singleShot(900, shot1c)
+
+    def shot1c():
+        # 从管理页切回共享文件夹，对比布局是否与基线一致
+        win.view.page().runJavaScript(
+            "(function(){"
+            " var t = document.querySelector('.tab[data-view=shares]'); if (t) t.click();"
+            " var g = document.querySelector('.card-grid');"
+            " window.__lay2 = g ? JSON.stringify({cols: getComputedStyle(g).gridTemplateColumns.split(' ').length,"
+            " vw: document.getElementById('view').clientWidth}) : 'none';"
+            " return JSON.stringify({lay0: window.__lay0, lay1: window.__lay1, lay2: window.__lay2}); })()",
+            0, lambda v: checks.append("LAYOUT " + str(v)))
+        QTimer.singleShot(900, shot1d)
+
+    def shot1d():
         # 把测试共享设为可写（模拟用户在管理页勾选"可上传"）
         with S.app.lock:
             for s in S.app.cfg["shares"]:

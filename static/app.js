@@ -515,6 +515,9 @@
       html += "</div>";
     }
     $("#view").innerHTML = html;
+    // 恢复进入浏览前的滚动位置（防止返回时布局"看起来变了"）
+    const st = state.sharesScroll || 0;
+    if (st) $("#view").scrollTop = st;
   }
 
   function renderBrowse() {
@@ -1332,6 +1335,8 @@
 
   async function openShare(shareId) {
     try {
+      // 记录共享列表当前滚动位置：打开浏览后返回时不跳回顶部
+      state.sharesScroll = $("#view").scrollTop || 0;
       await api("/api/list?share=" + encodeURIComponent(shareId) + "&path=/");
       state.share = getShare(shareId) || { id: shareId };
       state.path = "/";
