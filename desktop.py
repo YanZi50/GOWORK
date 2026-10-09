@@ -624,12 +624,25 @@ def run():
     args = parser.parse_args()
 
     if args.selftest:
-        # 打包版 --noconsole 下 sys.stdout 为 None：兜底到落盘文件，保证自检输出可读
+        # windowed 打包下崩溃无声：异常与关键节点落盘，便于定位
+        _crash_f = Path.cwd() / "_selftest_crash.txt"
         try:
+            def _hook(tp, val, tb):
+                try:
+                    import traceback
+                    _crash_f.write_text("".join(traceback.format_exception(tp, val, tb)), encoding="utf-8")
+                except Exception:
+                    pass
+            sys.excepthook = _hook
+            # 打包版 --noconsole 下 sys.stdout 为 None：兜底到落盘文件（独立文件名，避免与结果文件冲突）
             if sys.stdout is None:
-                sys.stdout = open(str(Path.cwd() / "_selftest_result.txt"), "w", encoding="utf-8")
-        except Exception:
-            pass
+                sys.stdout = open(str(Path.cwd() / "_selftest_stdout.txt"), "w", encoding="utf-8")
+            _crash_f.write_text("SELFTEST_BOOT_OK\n", encoding="utf-8")
+        except Exception as _boot_e:
+            try:
+                _crash_f.write_text("SELFTEST_BOOT_ERR %r\n" % (_boot_e,), encoding="utf-8")
+            except Exception:
+                pass
         # 自检全程使用隔离数据目录，绝不读写用户真实配置 / 下载记录
         import tempfile as _tf
         _iso = Path(_tf.mkdtemp(prefix="lanshare_selftest_data_"))
