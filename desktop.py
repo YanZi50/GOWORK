@@ -422,19 +422,24 @@ class MainWindow(QMainWindow):
             size = os.path.getsize(full) if os.path.isfile(full) else 0
             key = os.path.normcase(os.path.realpath(full)) if os.path.exists(full) \
                 else "srv:%s:%s" % (share.get("id", ""), rel)
-            # 已有同路径记录（Qt 下载已写）且保存位置已知：不覆盖
+            # 已有同路径记录（Qt 下载已写）且保存位置已知：不覆盖。
+            # 同一文件若已有近期（30 秒内）带真实路径的记录（Qt 窗口内下载），也不再补空记录。
+            now = time.time()
             for it in items:
                 if it.get("key") == key and it.get("dir"):
                     return
+            for it in items:
+                if it.get("name") == name and it.get("dir") and now - float(it.get("ts", 0)) < 30:
+                    return
             items = [it for it in items if it.get("key") != key]
             items.insert(0, {"key": key, "name": name, "size": size,
-                             "dir": "", "path": "", "ts": time.time()})
+                             "dir": "", "path": "", "ts": now})
             self._save_local_downloads(items[:200])
             self.view.page().runJavaScript(
                 "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
                 json.dumps({"type": "done", "id": key, "name": name,
                             "dir": "", "path": "", "size": size,
-                            "ts": time.time()}, ensure_ascii=False) + ")")
+                            "ts": now}, ensure_ascii=False) + ")")
         except Exception:
             pass
 
@@ -585,10 +590,13 @@ def run():
                 ddir = info.get("dir") or dl_dir
                 size = info.get("size") or item.totalBytes() or 0
                 full = item.path() or os.path.join(ddir, fname2)
-                # 去重：同一路径只保留一条（更新时间）
+                # 去重：同一路径只保留一条（更新时间）；同时合并 server 回调先写下的
+                # 同名「浏览器下载」空记录（dir 为空）为真实路径，避免同一文件显示两条
                 items = win._load_local_downloads()
                 key = os.path.normcase(os.path.realpath(full))
-                items = [it for it in items if it.get("key") != key]
+                items = [it for it in items
+                         if it.get("key") != key
+                         and not (it.get("name") == fname2 and not it.get("dir"))]
                 items.insert(0, {
                     "key": key, "name": fname2, "size": size,
                     "dir": ddir, "path": full, "ts": time.time(),
