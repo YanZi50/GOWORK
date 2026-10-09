@@ -519,6 +519,29 @@ def udp_announcer(stop):
         stop.wait(ANN_INTERVAL)
 
 
+def send_bye():
+    """程序完全退出时广播「离开」：其他设备立即把本机从列表移除（不依赖 TTL 超时）。"""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        except Exception:
+            pass
+        payload = json.dumps({
+            "t": "lanshare", "v": 1, "gone": True,
+            "name": app.cfg.get("server_name", ""),
+            "port": app.http_port,
+        }, ensure_ascii=False).encode("utf-8")
+        for t in [(MCAST_GROUP, MCAST_PORT), ("255.255.255.255", MCAST_PORT)]:
+            try:
+                sock.sendto(payload, t)
+            except Exception:
+                pass
+        sock.close()
+    except Exception:
+        pass
+
+
 def udp_listener(stop):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -547,6 +570,17 @@ def udp_listener(stop):
             continue
         ip = addr[0]
         if ip in local_ips:
+            continue
+        # 设备「离开」广播：立即移除，其他设备实时刷新
+        if msg.get("gone"):
+            changed = False
+            with app.lock:
+                k = "%s:%s" % (ip, int(msg.get("port", 0) or 0))
+                if k in app.peers:
+                    del app.peers[k]
+                    changed = True
+            if changed:
+                app.broadcast("peers")
             continue
         if app.upsert_peer(ip, int(msg.get("port", 0)), str(msg.get("name", "?")),
                            int(msg.get("shares", 0))):

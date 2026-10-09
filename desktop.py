@@ -817,6 +817,10 @@ def _show_window(win):
 def _quit(win, app):
     win.quitting = True
     win.tray.hide()
+    try:
+        S.send_bye()  # 广播「离开」：其他设备的设备列表立即移除本机
+    except Exception:
+        pass
     app.quit()
 
 
