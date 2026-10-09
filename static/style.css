@@ -642,6 +642,9 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-pos { display: flex; align-items: center; justify-content: flex-start; min-width: 0; }
 .dlc-pos .btn-dloc { padding: 4px 6px; display: inline-flex; align-items: center; justify-content: center; }
 .dlc-pos .btn-dloc svg { width: 15px; height: 15px; }
+/* 下载记录删除按钮：与文件夹图标同尺寸的窄图标按钮，不占长条 */
+.btn-dlr { padding: 5px 7px; display: inline-flex; align-items: center; justify-content: center; min-width: 0; }
+.btn-dlr svg { width: 14px; height: 14px; }
 .dlc-unknown { font-size: 12px; color: var(--faint); }
 /* 顶栏下载中心红色角标（正在下载任务数，实时） */
 .dl-badge { display: none; min-width: 16px; height: 16px; border-radius: 8px;

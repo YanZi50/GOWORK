@@ -466,7 +466,7 @@
             ? '<button class="btn btn-ghost btn-sm btn-dloc" type="button" data-dlr-open="' + esc(it.dir) + '" data-dlr-path="' + esc(it.path || "") + '" title="' + locTitle + '">' + I.folder + "</button>"
             : '<span class="dlc-unknown">未定位</span>')) +
         "</span>" +
-        '<button class="btn btn-ghost btn-sm" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
+        '<button class="btn btn-ghost btn-sm btn-dlr" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
     }
     return html;
   }

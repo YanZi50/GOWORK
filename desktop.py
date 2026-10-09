@@ -550,16 +550,23 @@ class MainWindow(QMainWindow):
             for it in items:
                 if it.get("name") == name and it.get("dir") and now - float(it.get("ts", 0)) < 30:
                     return
-            # 保存位置：优先用 server 接管复制的真实路径；否则探测浏览器下载目录
+            # 保存位置：优先用 server 接管复制的真实路径（文件/目录都算）；否则探测浏览器下载目录
             ddir, dpath = "", ""
-            if saved and os.path.isfile(saved):
-                ddir, dpath = os.path.dirname(saved), saved
+            if saved and os.path.exists(saved):
+                if os.path.isfile(saved):
+                    ddir, dpath = os.path.dirname(saved), saved
+                else:
+                    # 目录复制：保存位置就是该目录本身
+                    ddir, dpath = saved, saved
             elif os.path.isfile(full):
                 ddir, dpath = _locate_browser_download(full, name, size)
                 if not dpath:
                     dirs = _browser_download_dirs()
                     if dirs:
                         ddir = dirs[0]
+            elif os.path.isdir(full):
+                # 外部浏览器下载的目录（ZIP）：按 <名字>.zip 在浏览器目录补定位
+                ddir, dpath = _locate_browser_download(None, name, size)
             items = [it for it in items if it.get("key") != key]
             items.insert(0, {"key": key, "name": name, "size": size,
                              "dir": ddir, "path": dpath, "ts": now})
