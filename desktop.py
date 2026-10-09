@@ -624,6 +624,12 @@ def run():
     args = parser.parse_args()
 
     if args.selftest:
+        # 打包版 --noconsole 下 sys.stdout 为 None：兜底到落盘文件，保证自检输出可读
+        try:
+            if sys.stdout is None:
+                sys.stdout = open(str(Path.cwd() / "_selftest_result.txt"), "w", encoding="utf-8")
+        except Exception:
+            pass
         # 自检全程使用隔离数据目录，绝不读写用户真实配置 / 下载记录
         import tempfile as _tf
         _iso = Path(_tf.mkdtemp(prefix="lanshare_selftest_data_"))
@@ -1222,8 +1228,18 @@ def _selftest(app, win, svc):
         checks.append("AUTOSTART minimized=%s cmd=%s" % ("--minimized" in _a, _a))
         (DATA_DIR / "_selftest_dom.json").write_text(
             json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
-        print("SELFTEST_DOM %s" % json.dumps(checks, ensure_ascii=False), flush=True)
-        print("SELFTEST_OK %s %s %s" % (out, out2, out3), flush=True)
+        _sum = "SELFTEST_DOM %s\nSELFTEST_OK %s %s %s\n" % (
+            json.dumps(checks, ensure_ascii=False), out, out2, out3)
+        # 打包版 --noconsole 无 stdout：结果同落盘，供打包后无窗口自检
+        try:
+            (Path.cwd() / "_selftest_result.txt").write_text(_sum, encoding="utf-8")
+            (DATA_DIR / "_selftest_result.txt").write_text(_sum, encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            print(_sum, flush=True)
+        except Exception:
+            pass
         app.quit()
 
     def loaded(ok):

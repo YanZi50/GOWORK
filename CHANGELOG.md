@@ -2,6 +2,12 @@
 
 按时间倒序。每个版本标题后的短哈希可直接回滚：`git checkout <短哈希>`。
 
+## v2.6.13（2026-10-09）[HASH]
+
+- **优化**：打包版改为 **`--noconsole`（无黑窗口）**——双击 exe 直接出界面，不再闪黑色命令行窗口
+- **适配**：自检输出在无控制台下自动落盘 `_selftest_result.txt`（stdout 为 None 时兜底），打包后自检仍可验证
+- **测试**：冒烟 39 项全过 + 源码自检全绿（含 THEME_CFG）；打包版 exe 自检待打包后验证
+
 ## v2.6.12（2026-10-09）[018721c]
 
 - **修复**：主题每次打开都重置——原先把主题存 QtWebEngine 的 localStorage，打包版下持久化不稳定；现改存 **config.json**（新增 `theme` 字段，POST /api/config 保存、GET 返回；前端启动时先按 localStorage 快速应用、config 加载后以 config.json 为准）。主题随文件夹拷贝迁移，多电脑各记各的
