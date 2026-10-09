@@ -2,7 +2,7 @@
 
 按时间倒序。每个版本标题后的短哈希可直接回滚：`git checkout <短哈希>`。
 
-## v2.6.12（2026-10-09）[HASH]
+## v2.6.12（2026-10-09）[018721c]
 
 - **修复**：主题每次打开都重置——原先把主题存 QtWebEngine 的 localStorage，打包版下持久化不稳定；现改存 **config.json**（新增 `theme` 字段，POST /api/config 保存、GET 返回；前端启动时先按 localStorage 快速应用、config 加载后以 config.json 为准）。主题随文件夹拷贝迁移，多电脑各记各的
 - **测试**：冒烟新增 4 项主题断言（默认 dark/保存 200/回读 light/恢复）共 39 项全过；自检新增 `THEME_CFG` 断言（点击切换后 config.json 实际写入 theme=light）
