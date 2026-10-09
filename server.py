@@ -264,6 +264,96 @@ class App:
             save_config(self.cfg)
         self.broadcast("config")
 
+    # ---- 本机下载接管：带进度广播的文件/目录复制 ----
+    def _copy_with_progress(self, src, dl_dir, task):
+        """复制文件或整个目录树到下载位置，进度经 SSE「dlcopy」广播。
+        task 为 None 时（结果页模式）不发进度。返回保存路径，失败返回 ""。"""
+        if not hasattr(self, "_cp_pct"):
+            self._cp_pct, self._cp_last_emit = {}, {}
+        try:
+            os.makedirs(dl_dir, exist_ok=True)
+            if os.path.isdir(src):
+                base = os.path.basename(src.rstrip("/\\")) or "文件夹"
+                target = os.path.join(dl_dir, base)
+                i = 1
+                while os.path.exists(target):
+                    target = os.path.join(dl_dir, "%s (%d)" % (base, i))
+                    i += 1
+                self._copy_tree(src, target, task)
+                return target
+            target = os.path.join(dl_dir, os.path.basename(src))
+            stem, ext = os.path.splitext(os.path.basename(src))
+            i = 1
+            while os.path.exists(target):
+                target = os.path.join(dl_dir, "%s (%d)%s" % (stem, i, ext))
+                i += 1
+            total = os.path.getsize(src) or 1
+            done = 0
+            with open(src, "rb") as fsrc, open(target, "wb") as fdst:
+                while True:
+                    chunk = fsrc.read(CHUNK)
+                    if not chunk:
+                        break
+                    self.limiter.pace(len(chunk))
+                    fdst.write(chunk)
+                    done += len(chunk)
+                    if task:
+                        self._cp_emit(task, done, total, target)
+            return target
+        except Exception:
+            return ""
+
+    def _copy_tree(self, src_dir, dst_dir, task):
+        total = 0
+        for root, _dirs, files in os.walk(src_dir):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except Exception:
+                    pass
+        if total <= 0:
+            total = 1
+        done = 0
+        for root, _dirs, files in os.walk(src_dir):
+            rel_root = os.path.relpath(root, src_dir)
+            cur_dst = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
+            os.makedirs(cur_dst, exist_ok=True)
+            for f in files:
+                sp = os.path.join(root, f)
+                dp = os.path.join(cur_dst, f)
+                stem, ext = os.path.splitext(f)
+                i = 1
+                while os.path.exists(dp):
+                    dp = os.path.join(cur_dst, "%s (%d)%s" % (stem, i, ext))
+                    i += 1
+                with open(sp, "rb") as fsrc, open(dp, "wb") as fdst:
+                    while True:
+                        chunk = fsrc.read(CHUNK)
+                        if not chunk:
+                            break
+                        self.limiter.pace(len(chunk))
+                        fdst.write(chunk)
+                        done += len(chunk)
+                        if task:
+                            self._cp_emit(task, done, total, dp)
+
+    def _cp_emit(self, task, done, total, path):
+        """进度广播节流：每 ≥2% 或 ≥500ms 发一次。"""
+        try:
+            pct = int(done * 100 / total)
+            now = time.time()
+            with self.lock:
+                last = self._cp_pct.get(task, -10)
+                last_emit = self._cp_last_emit.get(task, 0)
+                if pct - last >= 2 or now - last_emit >= 0.5:
+                    self._cp_pct[task] = pct
+                    self._cp_last_emit[task] = now
+            if pct - last >= 2 or now - last_emit >= 0.5:
+                self.broadcast("dlcopy", {"type": "progress", "task": task,
+                                          "percent": pct, "path": path})
+        except Exception:
+            pass
+
     def broadcast(self, event, payload=None):
         with self.lock:
             clients = list(self.sse_clients)
@@ -826,24 +916,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def _save_to_dl_dir(self, src, name, dl_dir):
         """把文件流式复制到下载目录；重名自动加序号「name (1).ext」，不覆盖已有文件。"""
+        return self.app._copy_with_progress(src, dl_dir, None) or ""
+
+    def _api_dlcopy(self, qs):
+        """本机下载接管（前台不跳转）：后台线程复制文件/目录到下载位置，
+        进度经 SSE「dlcopy」事件广播，前端按钮变圆圈进度条。"""
+        share = self._require_share(qs)
+        if not share:
+            return
+        if not self._require_access(share):
+            return
+        rel = qs.get("path", [""])[0]
+        full = resolve_share_path(share, rel)
+        if full is None or not os.path.exists(full):
+            self._json(404, {"error": "文件不存在"})
+            return
+        dl_dir = (self.app.cfg.get("download_dir") or "").strip()
+        if not dl_dir:
+            self._json(400, {"error": "未设置下载位置，请在「管理 → 高级设置」设置下载位置后再下载"})
+            return
+        task = qs.get("task", [""])[0] or uuid.uuid4().hex[:12]
+        ip = self.client_address[0]
+        threading.Thread(target=self._run_copy,
+                         args=(share, rel, full, dl_dir, task, ip), daemon=True).start()
+        self._json(202, {"ok": True, "task": task})
+
+    def _run_copy(self, share, rel, full, dl_dir, task, ip):
         try:
-            os.makedirs(dl_dir, exist_ok=True)
-            target = os.path.join(dl_dir, name)
-            stem, ext = os.path.splitext(name)
-            i = 1
-            while os.path.exists(target):
-                target = os.path.join(dl_dir, "%s (%d)%s" % (stem, i, ext))
-                i += 1
-            with open(src, "rb") as fsrc, open(target, "wb") as fdst:
-                while True:
-                    chunk = fsrc.read(CHUNK)
-                    if not chunk:
-                        break
-                    self.app.limiter.pace(len(chunk))
-                    fdst.write(chunk)
-            return target
+            saved = self.app._copy_with_progress(full, dl_dir, task)
         except Exception:
-            return ""
+            saved = ""
+        if saved:
+            self.app.record_download(share, rel, full, ip, saved_path=saved)
+            self.app.broadcast("dlcopy", {"type": "done", "task": task, "path": saved})
+        else:
+            self.app.broadcast("dlcopy", {"type": "error", "task": task,
+                                          "error": "保存失败：无法写入下载目录"})
 
     def _html_result(self, saved, name):
         """本机下载接管的完成页：告诉用户文件保存到哪里了。"""
@@ -1223,6 +1331,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_raw(qs)
             if p == "/api/download":
                 return self._api_download(qs)
+            if p == "/api/dlcopy":
+                return self._api_dlcopy(qs)
             if p == "/api/downloads":
                 return self._api_downloads()
             if p == "/api/zip":

@@ -146,6 +146,24 @@ def main():
                 pass
         except Exception as e:
             check("本机下载接管链路", False, repr(e))
+        # 7.7) /api/dlcopy：本机下载前台接管——202 + 后台复制到下载目录（按钮圆环由 SSE 驱动）
+        try:
+            st, r = api("/api/dlcopy?share=%s&path=/up.bin&task=t_smoke1" % share_id)
+            check("dlcopy 返回 202", st == 202 and r.get("task") == "t_smoke1", str(r)[:200])
+            saved = os.path.join(dl_dir, "up.bin")
+            t0 = time.time()
+            while time.time() - t0 < 15:
+                if os.path.isfile(saved) and os.path.getsize(saved) == len(blob):
+                    break
+                time.sleep(0.2)
+            check("dlcopy 文件复制到下载目录",
+                  os.path.isfile(saved) and os.path.getsize(saved) == len(blob), saved)
+            try:
+                os.remove(saved)
+            except Exception:
+                pass
+        except Exception as e:
+            check("dlcopy 链路", False, repr(e))
         st, r = api("/api/config", json.dumps({"download_dir": ""}).encode("utf-8"))
         check("清除下载目录 200", st == 200 and r.get("download_dir") == "")
 

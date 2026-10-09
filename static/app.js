@@ -17,6 +17,7 @@
     pendingShare: null,
     pickPath: "",
     dlShowAll: false,
+    dlCopy: {},   // task -> { name, dir }
   };
 
   /* ---------------- 工具 ---------------- */
@@ -168,6 +169,9 @@
     es.addEventListener("config", () => refreshConfig());
     es.addEventListener("peers", () => refreshPeers());
     es.addEventListener("downloads", () => { if (state.view === "admin") renderDlList(); });
+    es.addEventListener("dlcopy", (e) => {
+      try { handleDlCopy(JSON.parse(e.data || "{}")); } catch (err) { /* ignore */ }
+    });
     es.addEventListener("stats", (e) => {
       try { updateSpeed(JSON.parse(e.data)); } catch (err) { /* 忽略 */ }
     });
@@ -256,7 +260,102 @@
       delete state.dlRunning[p.id];
       loadLocalDownloads();   // 从桌面端拉最新历史（已完成列表刷新）
     }
+    updateDlBadge();
   };
+
+  // ---- 本机下载接管：/api/dlcopy 后台复制 + SSE 进度 -> 按钮圆圈进度条 ----
+  function dlCopyEnabled() {
+    return !!(state.config && state.config.is_local &&
+      state.config.download_dir && window.native);
+  }
+
+  function startDlCopy(shareId, path, btn, isDir) {
+    const name = path.split("/").filter(Boolean).pop() || "文件";
+    const task = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    // 进入下载中列表 + 顶栏角标
+    state.dlRunning[task] = { name: name, dir: state.config.download_dir || "", size: 0, received: 0, total: 0, ts: Date.now() / 1000 };
+    state.dlCopy[task] = { name: name };
+    updateDlBadge();
+    // 按钮 -> 同尺寸圆圈进度（不跳动布局）
+    btn.dataset.dlctask = task;
+    btn.dataset.dlRestore = btn.innerHTML;
+    btn.classList.add("is-busy");
+    btn.innerHTML = '<span class="dl-ring" style="--p:0"></span>';
+    fetch("/api/dlcopy?share=" + encodeURIComponent(shareId) +
+      "&path=" + encodeURIComponent(path) + "&task=" + encodeURIComponent(task))
+      .then((r) => r.json().catch(() => null))
+      .then((d) => {
+        if (!d || !d.ok) {
+          resetDlBtn(btn, task, name);
+          toast("保存失败：请检查「高级设置 → 下载位置」", "error");
+        }
+      })
+      .catch(() => {
+        resetDlBtn(btn, task, name);
+        toast("下载请求失败", "error");
+      });
+  }
+
+  function handleDlCopy(p) {
+    if (!p || !p.task) return;
+    const btn = document.querySelector('[data-dlctask="' + p.task + '"]');
+    const ring = btn && btn.querySelector(".dl-ring");
+    if (p.type === "progress") {
+      const pct = Math.min(100, p.percent || 0);
+      if (ring) ring.style.setProperty("--p", pct);
+      // 同步下载中心「下载中」列表进度（总进度按 100% 计）
+      const cur = state.dlRunning[p.task];
+      if (cur) { cur.received = pct; cur.total = 100; }
+      if (state.view === "dlcenter" && state.dlTab === "running") {
+        const row = document.querySelector('[data-dlr="' + p.task + '"]');
+        const bar = row && row.querySelector(".dlc-bar-fill");
+        const pctEl = row && row.querySelector(".dlc-pct");
+        if (bar) {
+          bar.style.width = pct + "%";
+          if (pctEl) pctEl.textContent = pct + "%";
+        }
+      }
+    } else if (p.type === "done") {
+      if (ring) {
+        ring.style.setProperty("--p", 100);
+        ring.classList.add("is-done");
+      }
+      delete state.dlRunning[p.task];
+      delete state.dlCopy[p.task];
+      updateDlBadge();
+      setTimeout(() => resetDlBtn(btn, p.task), 1200);
+      loadLocalDownloads();
+    } else if (p.type === "error") {
+      resetDlBtn(btn, p.task);
+      delete state.dlRunning[p.task];
+      delete state.dlCopy[p.task];
+      updateDlBadge();
+      toast("保存失败：请检查「高级设置 → 下载位置」", "error");
+    }
+  }
+
+  function resetDlBtn(btn, task) {
+    if (!btn || !task) return;
+    if (btn.dataset.dlctask !== task) return;
+    delete btn.dataset.dlctask;
+    const restore = btn.dataset.dlRestore;
+    delete btn.dataset.dlRestore;
+    btn.classList.remove("is-busy");
+    btn.innerHTML = restore || (I.download + '<span class="btn-label">下载</span>');
+  }
+
+  // 顶栏「下载中心」红色角标：实时显示正在下载的任务数
+  function updateDlBadge() {
+    const b = $("#dlBadge");
+    if (!b) return;
+    const n = Object.keys(state.dlRunning || {}).length;
+    if (n > 0) {
+      b.textContent = n > 99 ? "99+" : n;
+      b.classList.add("show");
+    } else {
+      b.classList.remove("show");
+    }
+  }
 
   function loadLocalDownloads() {
     if (!window.native) return;
@@ -425,11 +524,16 @@
     });
 
     const canUpload = !!s.writable;
-    let html = '<div class="breadcrumb">' + crumb + "</div>" +
+    const canDirect = dlCopyEnabled();
+    let html = '<div class="browse-top">' +
+      '<button class="btn btn-ghost btn-sm" id="btnHome">' + I.back + '返回共享列表</button>' +
+      "</div>" +
+      '<div class="breadcrumb">' + crumb + "</div>" +
       '<div class="section-head"><div class="section-sub" id="browseCount"></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
       (state.path !== "/" ? '<button class="btn btn-ghost btn-sm" id="btnUp">' + I.back + '上级目录</button>' : "") +
-      '<button class="btn btn-ghost btn-sm" id="btnZip">' + I.zip + '打包下载 ZIP</button>' +
+      '<button class="btn btn-ghost btn-sm" id="btnZip">' +
+      (canDirect ? I.download + '下载整个文件夹' : I.zip + '打包下载 ZIP') + "</button>" +
       (canUpload ? '<button class="btn btn-primary btn-sm" id="btnUpload">' + I.upload + '上传文件</button>' : "") +
       "</div></div>" +
       (canUpload ? '<div class="drop-hint">可上传：把文件拖进下方列表，或点「上传文件」</div>' : "") +
@@ -437,6 +541,15 @@
       '<div class="upload-list" id="uploadList"></div>';
 
     $("#view").innerHTML = html;
+
+    const home = $("#btnHome");
+    if (home) {
+      home.addEventListener("click", () => {
+        state.share = null;
+        state.path = "/";
+        render();
+      });
+    }
 
     if (canUpload) {
       let fi = $("#fileInput");
@@ -474,8 +587,12 @@
     const zip = $("#btnZip");
     if (zip) {
       zip.addEventListener("click", () => {
-        location.href = "/api/zip?share=" + encodeURIComponent(s.id) +
-          "&path=" + encodeURIComponent(state.path);
+        if (dlCopyEnabled()) {
+          startDlCopy(s.id, state.path, zip, true);
+        } else {
+          location.href = "/api/zip?share=" + encodeURIComponent(s.id) +
+            "&path=" + encodeURIComponent(state.path);
+        }
       });
     }
 
@@ -530,14 +647,15 @@
           row.addEventListener("contextmenu", (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
-            showCtxMenu(ev.clientX, ev.clientY, s.id, path);
+            showCtxMenu(ev.clientX, ev.clientY, s.id, path, row);
           });
         } else {
           row.querySelectorAll("[data-act]").forEach((btn) => {
             btn.addEventListener("click", (ev) => {
               ev.stopPropagation();
               if (btn.dataset.act === "download") {
-                location.href = "/api/download?share=" + encodeURIComponent(s.id) +
+                if (dlCopyEnabled()) startDlCopy(s.id, path, btn, false);
+                else location.href = "/api/download?share=" + encodeURIComponent(s.id) +
                   "&path=" + encodeURIComponent(path);
               } else if (btn.dataset.act === "preview") {
                 openPreview(s.id, path);
@@ -560,18 +678,30 @@
 
   // 右键菜单：目前仅"下载整个文件夹（ZIP）"。浮层 fixed 定位，不占布局、不影响 UI 跳动。
   let _ctxMenu = null;
-  function showCtxMenu(x, y, shareId, path) {
+  function showCtxMenu(x, y, shareId, path, row) {
     closeCtxMenu();
+    const direct = dlCopyEnabled();
     _ctxMenu = document.createElement("div");
     _ctxMenu.className = "ctx-menu";
     _ctxMenu.innerHTML =
-      '<button type="button" class="ctx-item" data-act="zip">' + I.zip + "下载整个文件夹（ZIP）</button>";
-    _ctxMenu.style.left = Math.min(x, window.innerWidth - 220) + "px";
+      '<button type="button" class="ctx-item" data-act="dir">' +
+      (direct ? I.download + "下载整个文件夹（到下载位置）" : I.zip + "下载整个文件夹（ZIP）") + "</button>";
+    _ctxMenu.style.left = Math.min(x, window.innerWidth - 260) + "px";
     _ctxMenu.style.top = Math.min(y, window.innerHeight - 70) + "px";
     document.body.appendChild(_ctxMenu);
     _ctxMenu.querySelector("[data-act]").addEventListener("click", () => {
-      location.href = "/api/zip?share=" + encodeURIComponent(shareId) +
-        "&path=" + encodeURIComponent(path);
+      if (direct) {
+        // 在文件夹行尾部显示圆圈进度（右键场景也可见）
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-ghost btn-sm";
+        btn.style.alignSelf = "center";
+        if (row && row.appendChild) row.appendChild(btn);
+        startDlCopy(shareId, path, btn, true);
+      } else {
+        location.href = "/api/zip?share=" + encodeURIComponent(shareId) +
+          "&path=" + encodeURIComponent(path);
+      }
       closeCtxMenu();
     });
   }
@@ -1333,19 +1463,21 @@
       if (!tab) return;
       document.querySelectorAll(".tab").forEach((t) => t.classList.remove("is-active"));
       tab.classList.add("is-active");
+      const prev = state.view;
       state.view = tab.dataset.view;
       if (state.view === "shares") {
-        state.share = null;
-        state.path = "/";
+        // 从「共享浏览页」再点「共享文件夹」→ 回共享列表；从其他页切回 → 保持浏览位置
+        if (prev === "shares" && state.share) {
+          state.share = null;
+          state.path = "/";
+        }
       } else if (state.view === "peers") {
         refreshPeers();
       } else if (state.view === "dlcenter") {
         loadLocalDownloads();
       }
       render();
-      if (state.view === "shares" && !state.share) {
-        // 切回共享视图时如果之前停留在某共享内，保持浏览状态
-      }
+      updateDlBadge();
     });
 
     // 共享卡片动作（事件委托）
