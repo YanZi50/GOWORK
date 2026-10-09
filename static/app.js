@@ -447,18 +447,24 @@
     for (const it of done) {
       // dir 有值 = 可跳转（软件窗口内下载：真实路径；外部浏览器下载：定位到的浏览器下载目录/文件）
       const hasLoc = !!it.dir;
-      const locTitle = hasLoc
-        ? (it.path ? "打开所在文件夹（已定位到文件）" : "打开浏览器下载目录")
-        : "未能定位下载位置（浏览器下载目录不在默认位置，可在浏览器设置里查看）";
+      // 有路径但文件已被删除/移动 -> 显示「找不到」，置灰不可点
+      const gone = hasLoc && it.exists === false;
+      const locTitle = gone
+        ? "文件已被删除或移动，找不到原文件"
+        : (hasLoc
+          ? (it.path ? "打开所在文件夹（已定位到文件）" : "打开浏览器下载目录")
+          : "未能定位下载位置（浏览器下载目录不在默认位置，可在浏览器设置里查看）");
       html += '<div class="dlc-row dlc-done">' +
         '<span class="row-icon">' + fileIcon(it.name) + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div></div>" +
         '<span class="dlc-cell">' + (it.size ? fmtSize(it.size) : "--") + "</span>" +
         '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
         '<span class="dlc-pos" title="' + locTitle + '">' +
-        (hasLoc
-          ? '<button class="btn btn-ghost btn-sm btn-dloc" type="button" data-dlr-open="' + esc(it.dir) + '" data-dlr-path="' + esc(it.path || "") + '" title="' + locTitle + '">' + I.folder + "</button>"
-          : '<span class="dlc-unknown">未定位</span>') +
+        (gone
+          ? '<span class="dlc-unknown dlc-gone" title="' + locTitle + '">找不到</span>'
+          : (hasLoc
+            ? '<button class="btn btn-ghost btn-sm btn-dloc" type="button" data-dlr-open="' + esc(it.dir) + '" data-dlr-path="' + esc(it.path || "") + '" title="' + locTitle + '">' + I.folder + "</button>"
+            : '<span class="dlc-unknown">未定位</span>')) +
         "</span>" +
         '<button class="btn btn-ghost btn-sm" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
     }

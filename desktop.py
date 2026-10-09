@@ -230,6 +230,16 @@ class NativeBridge(QObject):
                 changed = True
         if changed:
             self.window._save_local_downloads(items[:200])
+        # 每条记录标注文件/目录是否仍存在（用于前端显示「找不到」）
+        for it in items:
+            p = it.get("path") or ""
+            d = it.get("dir") or ""
+            if p and os.path.exists(p):
+                it["exists"] = True
+            elif d and os.path.isdir(d):
+                it["exists"] = True
+            else:
+                it["exists"] = False
         return json.dumps(items)
 
     @Slot(str, result=bool)
@@ -378,7 +388,9 @@ def _locate_browser_download(src_path=None, name="", size=0, age=240):
                         continue
                 except Exception:
                     continue
-                if f != name and not os.path.splitext(f)[0].startswith(stem + " ("):
+                # 目录下载（浏览器存为 <文件夹名>.zip）按 zip 名匹配；文件按原名/重名变体匹配
+                zip_name = name + ".zip"
+                if f != name and f != zip_name and not os.path.splitext(f)[0].startswith(stem + " ("):
                     continue
                 try:
                     if size and abs(os.path.getsize(p) - size) > 16:
@@ -1059,6 +1071,21 @@ def _selftest(app, win, svc):
                 os.path.normcase(str(tmp / "保存区"))
             print("DL_LOCAL_API srv_note=%d dl_ok=%s dir_ok=%s hist=%d"
                   % (len(srv0), dl_ok, srv_dir_ok, len(hist0)), flush=True)
+            # exists 标注：文件存在 -> True；删除后 -> False（下载中心显示「找不到」）
+            try:
+                import json as _json
+                it_lst = _json.loads(win.bridge.getLocalDownloads())
+                it_x = [it for it in it_lst if it.get("name") == "示例文件.txt"]
+                ex_ok1 = bool(it_x) and it_x[0].get("exists") is True
+                saved_p = tmp / "保存区" / "示例文件.txt"
+                if saved_p.exists():
+                    saved_p.unlink()
+                it_lst2 = _json.loads(win.bridge.getLocalDownloads())
+                it_x2 = [it for it in it_lst2 if it.get("name") == "示例文件.txt"]
+                ex_ok2 = bool(it_x2) and it_x2[0].get("exists") is False
+                print("DL_LOCAL_API exists1=%s exists2=%s" % (ex_ok1, ex_ok2), flush=True)
+            except Exception as e:
+                print("DL_LOCAL_API exists_err %r" % (e,), flush=True)
             win._save_local_downloads([{"key": "K1", "name": "测试文件.zip", "size": 123,
                                         "dir": str(tmp), "path": str(tmp / "a.zip"), "ts": time.time()}])
             n1 = len(win._load_local_downloads())
