@@ -316,7 +316,7 @@
         return;
       }
       const row = ev.target.closest("[data-dlr-open]");
-      if (row) window.native.openDownloadFolder(row.dataset.dlrOpen);
+      if (row && row.dataset.dlrOpen) window.native.openDownloadFolder(row.dataset.dlrOpen);
     });
   }
 
@@ -340,12 +340,14 @@
     if (!done.length) return '<div class="empty">还没有下载完成记录</div>';
     let html = '<div class="dlc-row dlc-head"><span></span><span>文件</span><span>大小</span><span>完成时间</span><span>保存位置</span><span></span></div>';
     for (const it of done) {
-      html += '<div class="dlc-row dlc-done" data-dlr-open="' + esc(it.dir) + '" title="点击打开所在文件夹">' +
+      // dir 为空 = 外部浏览器下载（无法获知保存位置），不可点击打开
+      const canOpen = !!it.dir;
+      html += '<div class="dlc-row dlc-done"' + (canOpen ? ' data-dlr-open="' + esc(it.dir) + '" title="点击打开所在文件夹"' : ' title="保存位置未知（外部浏览器下载，路径由浏览器决定）"') + '>' +
         '<span class="row-icon">' + fileIcon(it.name) + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div></div>" +
         '<span class="dlc-cell">' + (it.size ? fmtSize(it.size) : "--") + "</span>" +
         '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
-        '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span>" +
+        '<span class="dlc-dir"' + (canOpen ? ' title="' + esc(it.dir) + '"' : "") + '>' + (canOpen ? esc(it.dir) : "位置未知") + "</span>" +
         '<button class="btn btn-ghost btn-sm" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
     }
     return html;
@@ -511,9 +513,10 @@
         const path = row.dataset.path;
         if (isDir) {
           row.addEventListener("click", () => navigate(s.id, path));
-          // 右键：下载整个文件夹（ZIP），桌面浏览器可用；手机端保留「打包下载 ZIP」按钮兜底
+          // 右键：下载整个文件夹（ZIP）。stopPropagation 防止 document 的关闭监听立刻收起菜单
           row.addEventListener("contextmenu", (ev) => {
             ev.preventDefault();
+            ev.stopPropagation();
             showCtxMenu(ev.clientX, ev.clientY, s.id, path);
           });
         } else {
@@ -558,11 +561,6 @@
         "&path=" + encodeURIComponent(path);
       closeCtxMenu();
     });
-    setTimeout(() => {
-      document.addEventListener("click", closeCtxMenu, { once: true });
-      document.addEventListener("contextmenu", closeCtxMenu, { once: true });
-      document.addEventListener("scroll", closeCtxMenu, { once: true, capture: true });
-    }, 0);
   }
   function closeCtxMenu() {
     if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
@@ -620,14 +618,14 @@
       '<button class="btn btn-ghost" type="submit">保存名称</button></div></div></div>' +
       "</form>";
 
-    // 添加共享：折叠卡片（点击展开表单）
+    // 添加共享：折叠卡片（点击展开表单；展开状态跨重渲染保持）
     html += '<div class="admin-form ac-card" id="addShareCard">' +
       '<div class="ac-head" data-toggle role="button" tabindex="0">' +
       '<span class="share-icon">' + I.folder + "</span>" +
       '<div class="ac-main"><div class="ac-name">添加共享文件夹</div>' +
       '<div class="ac-sub">填写名称、选择文件夹、设置权限，即可共享给局域网</div></div>' +
       '<span class="ac-arrow">' + I.back + "</span></div>" +
-      '<div class="ac-body" hidden>' +
+      '<div class="ac-body"' + (state.addOpen ? "" : " hidden") + '>' +
       '<div class="desktop-only" id="desktopSettings" hidden>' +
       '<div class="dropzone" id="dropZone">' +
       '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 11v5"/><path d="M9.5 13.5 12 11l2.5 2.5"/></svg>' +
@@ -664,14 +662,14 @@
       '<div class="section-sub">点击「编辑」展开修改设置</div></div></div>' +
       '<div class="admin-list" id="adminList"></div>';
 
-    // 高级设置：开机自启 / 服务端口 / 数据位置 / 清空下载记录
+    // 高级设置：开机自启 / 服务端口 / 数据位置 / 清空下载记录（展开状态跨重渲染保持）
     html += '<div class="admin-form ac-card" id="advCard" style="margin-top:6px">' +
       '<div class="ac-head" data-adv-toggle role="button" tabindex="0">' +
       '<span class="share-icon">' + I.settings + "</span>" +
       '<div class="ac-main"><div class="ac-name">高级设置</div>' +
       '<div class="ac-sub">开机自启 · 服务端口 · 下载位置 · 清空下载记录</div></div>' +
       '<span class="ac-arrow">' + I.back + "</span></div>" +
-      '<div class="ac-body" hidden>' +
+      '<div class="ac-body"' + (state.advOpen ? "" : " hidden") + '>' +
       '<div class="form-grid">' +
       '<div class="field"><label class="check-line"><input type="checkbox" id="advAutostart"' +
       (window.native ? "" : " disabled") + '> 开机自启（开机自动运行，关闭窗口时最小化到托盘）</label></div>' +
@@ -695,25 +693,31 @@
 
     $("#view").innerHTML = html;
 
-    // 添加共享折叠卡：点击展开/收起
+    // 添加共享折叠卡：点击展开/收起（记录状态，重渲染后保持）
     const addCard = $("#addShareCard");
     if (addCard) {
+      const arrow = addCard.querySelector(".ac-arrow");
+      if (arrow && state.addOpen) arrow.style.transform = "rotate(90deg)";
       addCard.querySelector("[data-toggle]").addEventListener("click", () => {
         const body = addCard.querySelector(".ac-body");
         body.hidden = !body.hidden;
-        const arrow = addCard.querySelector(".ac-arrow");
-        if (arrow) arrow.style.transform = body.hidden ? "" : "rotate(90deg)";
+        state.addOpen = !body.hidden;
+        const ar = addCard.querySelector(".ac-arrow");
+        if (ar) ar.style.transform = body.hidden ? "" : "rotate(90deg)";
       });
     }
 
-    // 高级设置折叠卡：点击展开/收起
+    // 高级设置折叠卡：点击展开/收起（记录状态，重渲染后保持）
     const advCard = $("#advCard");
     if (advCard) {
+      const arrow = advCard.querySelector(".ac-arrow");
+      if (arrow && state.advOpen) arrow.style.transform = "rotate(90deg)";
       advCard.querySelector("[data-adv-toggle]").addEventListener("click", () => {
         const body = advCard.querySelector(".ac-body");
         body.hidden = !body.hidden;
-        const arrow = advCard.querySelector(".ac-arrow");
-        if (arrow) arrow.style.transform = body.hidden ? "" : "rotate(90deg)";
+        state.advOpen = !body.hidden;
+        const ar = advCard.querySelector(".ac-arrow");
+        if (ar) ar.style.transform = body.hidden ? "" : "rotate(90deg)";
       });
     }
 
@@ -963,7 +967,7 @@
         '<button class="btn btn-ghost btn-sm" type="button" data-ac-toggle>' + I.copy + '编辑</button>' +
         '<button class="btn btn-danger btn-sm" type="button" data-ac-del>删除</button>' +
         "</div>" +
-        '<div class="ac-body" hidden>' +
+        '<div class="ac-body"' + (state.openShares && state.openShares[s.id] ? "" : " hidden") + '>' +
         '<div class="form-grid">' +
         '<div class="field"><label>共享名称</label>' +
         '<input class="input" data-f="name" value="' + esc(s.name) + '" required></div>' +
@@ -1008,11 +1012,15 @@
       if (ev.target.closest("[data-ac-toggle]") || ev.target === head ||
           ev.target.closest("[data-toggle]")) {
         body.hidden = !body.hidden;
+        state.openShares = state.openShares || {};
+        state.openShares[card.dataset.id] = !body.hidden;
         ev.stopPropagation();
         return;
       }
       if (ev.target.closest("[data-ac-cancel]")) {
         body.hidden = true;
+        state.openShares = state.openShares || {};
+        state.openShares[card.dataset.id] = false;
         return;
       }
       if (ev.target.closest("[data-f=pick]")) {
@@ -1490,6 +1498,14 @@
     handleDeepLink();
     refreshConfig();
     refreshPeers();
+    // 右键菜单全局关闭：点击/右键/滚动在菜单外时收起（菜单内事件不关，避免连点不弹）
+    document.addEventListener("click", (ev) => {
+      if (_ctxMenu && !_ctxMenu.contains(ev.target)) closeCtxMenu();
+    });
+    document.addEventListener("contextmenu", (ev) => {
+      if (_ctxMenu && !_ctxMenu.contains(ev.target)) closeCtxMenu();
+    });
+    document.addEventListener("scroll", () => closeCtxMenu(), true);
   }
 
   document.addEventListener("DOMContentLoaded", init);

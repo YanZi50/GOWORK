@@ -275,15 +275,28 @@ class App:
                 pass
 
     # ---- 下载统计（谁下载过、几次、何时）----
+    def _is_local_ip(self, ip):
+        if ip in ("127.0.0.1", "::1", "localhost", "0.0.0.0"):
+            return True
+        for a in self.cfg.get("addresses", []) or []:
+            if a == ip:
+                return True
+        return False
+
     def record_download(self, share, rel, full, ip, name=None):
         now = time.time()
         key = (share["id"], rel, ip)
         peer = ip
+        local = self._is_local_ip(ip)
         with self.lock:
-            for v in self.peers.values():
-                if v["host"] == ip and v.get("name"):
-                    peer = v["name"]
-                    break
+            if local:
+                # 本机（含回环与局域网 IP）下载自己的共享：显示为本机设备名
+                peer = self.cfg.get("server_name") or socket.gethostname() or "本机"
+            else:
+                for v in self.peers.values():
+                    if v["host"] == ip and v.get("name"):
+                        peer = v["name"]
+                        break
             cur = self.downloads.get(key)
             if cur is None:
                 self.downloads[key] = {
@@ -300,6 +313,14 @@ class App:
                 cur["last_ts"] = now
                 cur["peer"] = peer
             self._save_downloads()
+        # 本机下载：通知桌面端补充「下载中心」历史（保存位置可能未知，交给桌面端处理）
+        if local:
+            cb = getattr(self, "on_local_download", None)
+            if cb:
+                try:
+                    cb(share, rel, full)
+                except Exception:
+                    pass
         self.broadcast("downloads")
 
     def _save_downloads(self):

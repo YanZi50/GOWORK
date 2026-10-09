@@ -19,6 +19,7 @@ import base64
 import io
 import json
 import os
+import queue
 import struct
 import sys
 import threading
@@ -328,6 +329,12 @@ class MainWindow(QMainWindow):
         self.channel.registerObject("bridge", self.bridge)
         page.setWebChannel(self.channel)
 
+        # server（HTTP 线程）回调的本机下载事件：入队后由主线程 QTimer 轮询处理
+        self._dl_note_q = queue.Queue()
+        self._note_timer = QTimer(self)
+        self._note_timer.timeout.connect(self._drain_dl_notes)
+        self._note_timer.start(120)
+
         self.view.load(QUrl(local_url))
 
     @staticmethod
@@ -364,10 +371,17 @@ class MainWindow(QMainWindow):
         self.view.setUrl(QUrl("http://%s/" % addr))
 
     # ---- 本机下载历史（下载中心），持久化到 data_dir/downloads_local.json ----
+    def _drain_dl_notes(self):
+        try:
+            while True:
+                share, rel, full = self._dl_note_q.get_nowait()
+                self._note_local_download(share, rel, full)
+        except queue.Empty:
+            pass
+
     def _local_dl_file(self):
         # 跟随 server 数据目录：selftest 隔离时也隔离，不污染真实数据
         return Path(getattr(S, "DATA_DIR", DATA_DIR)) / "downloads_local.json"
-
     def _load_local_downloads(self):
         try:
             p = self._local_dl_file()
@@ -397,6 +411,32 @@ class MainWindow(QMainWindow):
 
     def _clear_local_downloads(self):
         return self._save_local_downloads([])
+
+    # 本机下载自己的共享（Qt 窗口或外部浏览器访问本机地址）：
+    # server 在下载统计里识别本机来源，回调这里补充「下载中心」历史。
+    # 注意在 handler 线程回调，切到主线程再写文件/推事件。
+    def _note_local_download(self, share, rel, full):
+        try:
+            items = self._load_local_downloads()
+            name = (os.path.basename(full) or rel.rsplit("/", 1)[-1] or "下载文件")
+            size = os.path.getsize(full) if os.path.isfile(full) else 0
+            key = os.path.normcase(os.path.realpath(full)) if os.path.exists(full) \
+                else "srv:%s:%s" % (share.get("id", ""), rel)
+            # 已有同路径记录（Qt 下载已写）且保存位置已知：不覆盖
+            for it in items:
+                if it.get("key") == key and it.get("dir"):
+                    return
+            items = [it for it in items if it.get("key") != key]
+            items.insert(0, {"key": key, "name": name, "size": size,
+                             "dir": "", "path": "", "ts": time.time()})
+            self._save_local_downloads(items[:200])
+            self.view.page().runJavaScript(
+                "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
+                json.dumps({"type": "done", "id": key, "name": name,
+                            "dir": "", "path": "", "size": size,
+                            "ts": time.time()}, ensure_ascii=False) + ")")
+        except Exception:
+            pass
 
     def closeEvent(self, e):
         if self.quitting:
@@ -483,6 +523,13 @@ def run():
 
     icon = build_icons()
     win = MainWindow(local_url, icon)
+
+    # server 识别到本机下载（自己的共享）时，回调桌面端补充「下载中心」历史。
+    # 回调来自 HTTP 线程：仅入队，由主线程 QTimer 轮询处理（线程安全、事件循环无关）。
+    try:
+        S.app.on_local_download = lambda share, rel, full: win._dl_note_q.put((share, rel, full))
+    except Exception:
+        pass
 
     # 下载位置：若已配置 download_dir 则静默存到该目录；未配置则弹窗让用户选择并自动记住
     try:
@@ -651,6 +698,9 @@ def _selftest(app, win, svc):
     tmp.mkdir(exist_ok=True)
     (tmp / "示例文件.txt").write_text("hello lan share preview", encoding="utf-8")
     (tmp / "说明文档.md").write_text("# 标题\n\n- 列表项一\n- 列表项二\n\n**加粗**与`行内代码`", encoding="utf-8")
+    _sub = tmp / "子文件夹"
+    _sub.mkdir(exist_ok=True)
+    (_sub / "内文件.txt").write_text("inside folder", encoding="utf-8")
     (tmp / "photo.png").write_bytes(
         base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
     try:
@@ -713,6 +763,9 @@ def _selftest(app, win, svc):
             " diag: (window.__diag ? JSON.stringify(window.__diag) : '')," +
             " dlRows: document.querySelectorAll('#dlList .dl-row:not(.dl-head)').length," +
             " dlText: (document.getElementById('dlList')||{}).textContent ? document.getElementById('dlList').textContent.slice(0,120) : ''," +
+            " dlPeerText: (function(){ var c=document.querySelector('#dlList .dl-row:not(.dl-head) span:nth-child(3)'); return c?c.textContent:''; })()," +
+            " ctxMenu: !!document.querySelector('.ctx-menu')," +
+            " advBodyOpen: (function(){ var b=document.querySelector('#advCard .ac-body'); return b?!b.hidden:false; })()," +
             " acCards: document.querySelectorAll('#adminList .ac-card').length," +
             " acOpen: (function(){ var b=document.querySelector('#adminList .ac-body'); return b ? !b.hidden : false; })()," +
             " acPwdVal: (function(){ var v=''; document.querySelectorAll('#adminList input[data-f=pwd]').forEach(function(i){ if(i.value) v=i.value; }); return v; })()," +
@@ -763,10 +816,11 @@ def _selftest(app, win, svc):
     def shot2():
         run_js_checks("admin")
         snap(out2)
-        # 展开第一个共享卡片 + 切换亮色主题（交互验证）
+        # 展开第一个共享卡片 + 展开高级设置卡 + 切换亮色主题（交互验证）
         win.view.page().runJavaScript(
             "(function(){"
             " var h = document.querySelector('#adminList .ac-head'); if (h) h.click();"
+            " var adv = document.querySelector('#advCard [data-adv-toggle]'); if (adv) adv.click();"
             " var t = document.getElementById('themeBtn'); if (t) t.click();"
             " return 'ok'; })()")
         QTimer.singleShot(700, shot2b)
@@ -781,6 +835,13 @@ def _selftest(app, win, svc):
 
     def shot2c():
         run_js_checks("admin3")
+        # 保存共享（触发 renderAdmin 全量重渲染）→ 高级设置卡应保持展开（折叠状态持久化）
+        win.view.page().runJavaScript(
+            "(function(){ var b=document.querySelector('#adminList [data-ac-save]'); if (b) b.click(); return 'ok'; })()")
+        QTimer.singleShot(900, shot2c3)
+
+    def shot2c3():
+        run_js_checks("admin_saved")
         # 打开可写共享的浏览视图（验证上传 UI）
         win.view.page().runJavaScript(
             "document.querySelector('.tab[data-view=shares]') && "
@@ -806,9 +867,22 @@ def _selftest(app, win, svc):
     def shot4():
         run_js_checks("preview_txt")
         snap(out4)
-        # 点 txt 文件（第二个文件行）的「预览」
+        # 右键文件夹行 → 自定义菜单应出现（stopPropagation 修复：连续右键不误关）
         win.view.page().runJavaScript(
             "(function(){ try {"
+            " var row = document.querySelector('.file-row.is-dir');"
+            " window.__diag = {dirRow: !!row};"
+            " if (row) { var ev = new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 300, clientY: 300}); row.dispatchEvent(ev); }"
+            " return 'ok'; } catch(e){ window.__diag = {exc: e.message}; return 'err'; }"
+            "})()")
+        QTimer.singleShot(400, shot4b)
+
+    def shot4b():
+        run_js_checks("ctxmenu")
+        # 关闭右键菜单，恢复原流程：点 txt 文件（第二个文件行）的「预览」
+        win.view.page().runJavaScript(
+            "(function(){ try {"
+            " document.body.click();"
             " var rows = document.querySelectorAll('.file-row[data-dir=\"0\"]');"
             " var row = rows[1];"
             " var btn = row ? row.querySelector('[data-act=preview]') : null;"
@@ -839,15 +913,19 @@ def _selftest(app, win, svc):
     def shot5a2():
         run_js_checks("preview_md")
         snap(out4)
-        # 关闭预览弹窗，再切换「下载中心」视图
+        # 关闭预览弹窗（清空内容），再切「下载中心」视图（切视图由 shot5b 完成）
         win.view.page().runJavaScript(
-            "(function(){ var m = document.getElementById('previewModal'); if (m) m.hidden = true;"
-            " var t = document.querySelector('.tab[data-view=dlcenter]'); if (t) t.click(); return 'ok'; })()")
-        QTimer.singleShot(700, shot5c)
+            "(function(){ var m = document.getElementById('previewModal'); if (m) { m.hidden = true;"
+            " var b = document.getElementById('previewBody'); if (b) b.innerHTML = ''; } return 'ok'; })()")
+        QTimer.singleShot(400, shot5b)
 
     def shot5b():
-        # 下载中心：本机历史读写（隔离数据目录）+ 切换到下载中心视图
+        # 下载中心：本机下载自动入历史（server 回调）+ 历史读写（隔离数据目录）
         try:
+            # selftest 开头的本机下载（127.0.0.1）应已由 server 回调（队列->主线程轮询）写入历史
+            hist0 = win._load_local_downloads()
+            srv0 = [it for it in hist0 if it.get("name") == "示例文件.txt" and not it.get("dir")]
+            print("DL_LOCAL_API srv_note=%d hist=%d" % (len(srv0), len(hist0)), flush=True)
             win._save_local_downloads([{"key": "K1", "name": "测试文件.zip", "size": 123,
                                         "dir": str(tmp), "path": str(tmp / "a.zip"), "ts": time.time()}])
             n1 = len(win._load_local_downloads())
