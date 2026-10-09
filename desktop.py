@@ -481,8 +481,8 @@ class MainWindow(QMainWindow):
     def _drain_dl_notes(self):
         try:
             while True:
-                share, rel, full = self._dl_note_q.get_nowait()
-                self._note_local_download(share, rel, full)
+                share, rel, full, saved = self._dl_note_q.get_nowait()
+                self._note_local_download(share, rel, full, saved)
         except queue.Empty:
             pass
 
@@ -522,7 +522,7 @@ class MainWindow(QMainWindow):
     # 本机下载自己的共享（Qt 窗口或外部浏览器访问本机地址）：
     # server 在下载统计里识别本机来源，回调这里补充「下载中心」历史。
     # 注意在 handler 线程回调，切到主线程再写文件/推事件。
-    def _note_local_download(self, share, rel, full):
+    def _note_local_download(self, share, rel, full, saved=""):
         try:
             items = self._load_local_downloads()
             name = (os.path.basename(full) or rel.rsplit("/", 1)[-1] or "下载文件")
@@ -538,15 +538,17 @@ class MainWindow(QMainWindow):
             for it in items:
                 if it.get("name") == name and it.get("dir") and now - float(it.get("ts", 0)) < 30:
                     return
-            items = [it for it in items if it.get("key") != key]
-            # 外部浏览器下载时 dir 为空：尝试定位浏览器下载目录里的实际文件
+            # 保存位置：优先用 server 接管复制的真实路径；否则探测浏览器下载目录
             ddir, dpath = "", ""
-            if os.path.isfile(full):
+            if saved and os.path.isfile(saved):
+                ddir, dpath = os.path.dirname(saved), saved
+            elif os.path.isfile(full):
                 ddir, dpath = _locate_browser_download(full, name, size)
                 if not dpath:
                     dirs = _browser_download_dirs()
                     if dirs:
                         ddir = dirs[0]
+            items = [it for it in items if it.get("key") != key]
             items.insert(0, {"key": key, "name": name, "size": size,
                              "dir": ddir, "path": dpath, "ts": now})
             self._save_local_downloads(items[:200])
@@ -647,7 +649,7 @@ def run():
     # server 识别到本机下载（自己的共享）时，回调桌面端补充「下载中心」历史。
     # 回调来自 HTTP 线程：仅入队，由主线程 QTimer 轮询处理（线程安全、事件循环无关）。
     try:
-        S.app.on_local_download = lambda share, rel, full: win._dl_note_q.put((share, rel, full))
+        S.app.on_local_download = lambda share, rel, full, saved="": win._dl_note_q.put((share, rel, full, saved))
     except Exception:
         pass
 
@@ -831,12 +833,15 @@ def _selftest(app, win, svc):
     except Exception:
         pass
 
-    # 模拟一次局域网下载，验证管理页「下载记录」面板有真实内容
+    # 模拟一次局域网下载，验证管理页「下载记录」面板有真实内容。
+    # 设置 download_dir → 本机下载被 server 接管复制到该目录（验证落盘路径）。
+    _dl_zone = tmp / "保存区"
+    with S.app.lock:
+        S.app.cfg["download_dir"] = str(_dl_zone)
+        _sid = S.app.cfg["shares"][0]["id"]
     try:
         import urllib.request as _ur
         import urllib.parse as _up
-        with S.app.lock:
-            _sid = S.app.cfg["shares"][0]["id"]
         _ur.urlopen("http://127.0.0.1:%d/api/download?share=%s&path=%s"
                     % (port, _sid, _up.quote("/示例文件.txt")), timeout=5).read()
     except Exception:
@@ -1045,10 +1050,15 @@ def _selftest(app, win, svc):
     def shot5b():
         # 下载中心：本机下载自动入历史（server 回调）+ 历史读写（隔离数据目录）
         try:
-            # selftest 开头的本机下载（127.0.0.1）应已由 server 回调（队列->主线程轮询）写入历史
+            # selftest 开头的本机下载（127.0.0.1）应已由 server 回调（队列->主线程轮询）写入历史，
+            # 且因设置了 download_dir，文件应被接管复制到「保存区」、记录 dir 指向它
             hist0 = win._load_local_downloads()
             srv0 = [it for it in hist0 if it.get("name") == "示例文件.txt"]
-            print("DL_LOCAL_API srv_note=%d hist=%d" % (len(srv0), len(hist0)), flush=True)
+            dl_ok = (tmp / "保存区" / "示例文件.txt").exists()
+            srv_dir_ok = bool(srv0) and os.path.normcase(str(srv0[0].get("dir", ""))) == \
+                os.path.normcase(str(tmp / "保存区"))
+            print("DL_LOCAL_API srv_note=%d dl_ok=%s dir_ok=%s hist=%d"
+                  % (len(srv0), dl_ok, srv_dir_ok, len(hist0)), flush=True)
             win._save_local_downloads([{"key": "K1", "name": "测试文件.zip", "size": 123,
                                         "dir": str(tmp), "path": str(tmp / "a.zip"), "ts": time.time()}])
             n1 = len(win._load_local_downloads())

@@ -283,7 +283,7 @@ class App:
                 return True
         return False
 
-    def record_download(self, share, rel, full, ip, name=None):
+    def record_download(self, share, rel, full, ip, name=None, saved_path=""):
         now = time.time()
         key = (share["id"], rel, ip)
         peer = ip
@@ -313,12 +313,12 @@ class App:
                 cur["last_ts"] = now
                 cur["peer"] = peer
             self._save_downloads()
-        # 本机下载：通知桌面端补充「下载中心」历史（保存位置可能未知，交给桌面端处理）
+        # 本机下载：通知桌面端补充「下载中心」历史（saved_path 为 server 接管复制的真实路径）
         if local:
             cb = getattr(self, "on_local_download", None)
             if cb:
                 try:
-                    cb(share, rel, full)
+                    cb(share, rel, full, saved_path or "")
                 except Exception:
                     pass
         self.broadcast("downloads")
@@ -811,8 +811,78 @@ class Handler(BaseHTTPRequestHandler):
         if full is None or not os.path.isfile(full):
             self._json(404, {"error": "文件不存在"})
             return
+        local = self.app._is_local_ip(self.client_address[0])
+        dl_dir = (self.app.cfg.get("download_dir") or "").strip()
+        if local and dl_dir:
+            # 本机下载：接管保存位置——把文件复制到用户设置的下载目录，返回结果页。
+            # 外部浏览器对「下载位置」无能为力（浏览器安全边界），本机由 server 直接落盘。
+            saved = self._save_to_dl_dir(full, os.path.basename(full), dl_dir)
+            self.app.record_download(share, rel, full, self.client_address[0],
+                                     saved_path=saved)
+            self._html_result(saved, os.path.basename(full))
+            return
         self.app.record_download(share, rel, full, self.client_address[0])
         self._send_file(full, download_name=os.path.basename(full), inline=False)
+
+    def _save_to_dl_dir(self, src, name, dl_dir):
+        """把文件流式复制到下载目录；重名自动加序号「name (1).ext」，不覆盖已有文件。"""
+        try:
+            os.makedirs(dl_dir, exist_ok=True)
+            target = os.path.join(dl_dir, name)
+            stem, ext = os.path.splitext(name)
+            i = 1
+            while os.path.exists(target):
+                target = os.path.join(dl_dir, "%s (%d)%s" % (stem, i, ext))
+                i += 1
+            with open(src, "rb") as fsrc, open(target, "wb") as fdst:
+                while True:
+                    chunk = fsrc.read(CHUNK)
+                    if not chunk:
+                        break
+                    self.app.limiter.pace(len(chunk))
+                    fdst.write(chunk)
+            return target
+        except Exception:
+            return ""
+
+    def _html_result(self, saved, name):
+        """本机下载接管的完成页：告诉用户文件保存到哪里了。"""
+        if not saved:
+            self._json(500, {"error": "保存失败：无法写入下载目录，请检查「高级设置 → 下载位置」"})
+            return
+        d0 = os.path.dirname(saved)
+        esc = lambda s: (s.replace("&", "&amp;").replace("<", "&lt;")
+                         .replace(">", "&gt;").replace('"', "&quot;"))
+        body = (
+            "<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>已保存</title><style>"
+            "body{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#f5f7fb;"
+            "color:#222;display:flex;min-height:90vh;align-items:center;justify-content:center;margin:0}"
+            ".card{background:#fff;border-radius:16px;padding:34px 42px;"
+            "box-shadow:0 8px 30px rgba(0,0,0,.08);max-width:540px;width:90%}"
+            "h1{font-size:22px;margin:0 0 4px;color:#1a7f4b}"
+            ".tag{display:inline-block;background:#eaf4ee;color:#1a7f4b;border-radius:8px;"
+            "padding:4px 10px;font-size:13px;margin:10px 0 14px}"
+            ".p{color:#555;font-size:14px;line-height:1.8;word-break:break-all;margin:8px 0}"
+            "a{color:#2563eb;text-decoration:none;font-size:14px}"
+            "</style></head><body><div class=\"card\">"
+            "<h1>文件已保存</h1>"
+            "<div class=\"tag\">__NAME__</div>"
+            "<p class=\"p\">保存位置：<b>__DIR__</b></p>"
+            "<p class=\"p\"><a href=\"/\">← 返回共享列表</a></p>"
+            "</div></body></html>"
+        ).replace("__NAME__", esc(name)).replace("__DIR__", esc(d0))
+        try:
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            pass
 
     def _api_downloads(self):
         """下载统计：仅本机可查（谁下载过、几次、何时），供管理页防误删判断。"""

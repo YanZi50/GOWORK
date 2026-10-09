@@ -131,6 +131,21 @@ def main():
         check("config 回显 download_dir", st == 200 and cfg2.get("download_dir") == dl_dir, str(cfg2)[:200])
         _cfg_disk = json.loads((server_dir / "config.json").read_text(encoding="utf-8"))
         check("download_dir 落盘", _cfg_disk.get("download_dir") == dl_dir)
+        # 7.6) 本机下载接管：已设置下载位置时，本机下载直接复制到该目录并返回结果页
+        try:
+            resp = urllib.request.urlopen(
+                BASE + "/api/download?share=%s&path=/up.bin" % share_id, timeout=30)
+            data = resp.read().decode("utf-8", "replace")
+            check("本机下载返回结果页", resp.status == 200 and "文件已保存" in data, data[:120])
+            saved = os.path.join(dl_dir, "up.bin")
+            check("文件已复制到下载目录",
+                  os.path.isfile(saved) and os.path.getsize(saved) == len(blob), saved)
+            try:
+                os.remove(saved)
+            except Exception:
+                pass
+        except Exception as e:
+            check("本机下载接管链路", False, repr(e))
         st, r = api("/api/config", json.dumps({"download_dir": ""}).encode("utf-8"))
         check("清除下载目录 200", st == 200 and r.get("download_dir") == "")
 
