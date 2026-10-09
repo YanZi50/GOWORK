@@ -234,12 +234,15 @@ class NativeBridge(QObject):
         for it in items:
             p = it.get("path") or ""
             d = it.get("dir") or ""
-            if p and os.path.exists(p):
-                it["exists"] = True
-            elif d and os.path.isdir(d):
-                it["exists"] = True
+            if not p:
+                # 未定位到具体文件：下载目录还在即可打开（打开目录查看）
+                it["exists"] = bool(d and os.path.isdir(d))
+            elif os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(d)):
+                # 文件夹记录：目录本身存在才可打开
+                it["exists"] = bool(os.path.isdir(p))
             else:
-                it["exists"] = False
+                # 文件记录：具体文件必须存在，删除后显示「找不到」
+                it["exists"] = bool(os.path.isfile(p))
         return json.dumps(items)
 
     @Slot(str, result=bool)
@@ -1153,6 +1156,10 @@ def _selftest(app, win, svc):
                 it_lst2 = _json.loads(win.bridge.getLocalDownloads())
                 it_x2 = [it for it in it_lst2 if it.get("name") == "示例文件.txt"]
                 ex_ok2 = bool(it_x2) and it_x2[0].get("exists") is False
+                if not ex_ok1:
+                    print("DL_LOCAL_API_EXISTS1_FAIL", flush=True)
+                if not ex_ok2:
+                    print("DL_LOCAL_API_EXISTS2_FAIL", flush=True)
                 print("DL_LOCAL_API exists1=%s exists2=%s" % (ex_ok1, ex_ok2), flush=True)
             except Exception as e:
                 print("DL_LOCAL_API exists_err %r" % (e,), flush=True)
