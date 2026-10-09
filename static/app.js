@@ -315,6 +315,12 @@
         });
         return;
       }
+      const btn = ev.target.closest("[data-dlr-open]");
+      if (btn && btn.dataset.dlrOpen) {
+        ev.stopPropagation();
+        window.native.openDownloadFolder(btn.dataset.dlrOpen, btn.dataset.dlrPath || "");
+        return;
+      }
       const row = ev.target.closest("[data-dlr-open]");
       if (row && row.dataset.dlrOpen) window.native.openDownloadFolder(row.dataset.dlrOpen);
     });
@@ -325,7 +331,7 @@
     let html = "";
     for (const it of running) {
       const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
-      html += '<div class="dlc-row" data-dlr="' + esc(it.id) + '">' +
+      html += '<div class="dlc-row dlc-running" data-dlr="' + esc(it.id) + '">' +
         '<span class="row-icon">' + I.download + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div>" +
         '<div class="dlc-bar"><div class="dlc-bar-fill" style="width:' + pct + '%"></div></div>' +
@@ -340,14 +346,21 @@
     if (!done.length) return '<div class="empty">还没有下载完成记录</div>';
     let html = '<div class="dlc-row dlc-head"><span></span><span>文件</span><span>大小</span><span>完成时间</span><span>保存位置</span><span></span></div>';
     for (const it of done) {
-      // dir 为空 = 外部浏览器下载（路径由浏览器决定，软件无法接管），不可点击打开
-      const canOpen = !!it.dir;
-      html += '<div class="dlc-row dlc-done"' + (canOpen ? ' data-dlr-open="' + esc(it.dir) + '" title="点击打开所在文件夹"' : ' title="浏览器下载：文件已保存在你浏览器的下载目录里（软件无法接管浏览器路径）；在软件窗口内下载会自动存到「高级设置」里的下载位置"') + '>' +
+      // dir 有值 = 可跳转（软件窗口内下载：真实路径；外部浏览器下载：定位到的浏览器下载目录/文件）
+      const hasLoc = !!it.dir;
+      const locTitle = hasLoc
+        ? (it.path ? "打开所在文件夹（已定位到文件）" : "打开浏览器下载目录")
+        : "未能定位下载位置（浏览器下载目录不在默认位置，可在浏览器设置里查看）";
+      html += '<div class="dlc-row dlc-done">' +
         '<span class="row-icon">' + fileIcon(it.name) + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div></div>" +
         '<span class="dlc-cell">' + (it.size ? fmtSize(it.size) : "--") + "</span>" +
         '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
-        '<span class="dlc-dir"' + (canOpen ? ' title="' + esc(it.dir) + '"' : "") + '>' + (canOpen ? esc(it.dir) : "浏览器下载目录") + "</span>" +
+        '<span class="dlc-pos" title="' + locTitle + '">' +
+        (hasLoc
+          ? '<button class="btn btn-ghost btn-sm btn-dloc" type="button" data-dlr-open="' + esc(it.dir) + '" data-dlr-path="' + esc(it.path || "") + '" title="' + locTitle + '">' + I.folder + "</button>"
+          : '<span class="dlc-unknown">未定位</span>') +
+        "</span>" +
         '<button class="btn btn-ghost btn-sm" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
     }
     return html;

@@ -215,7 +215,22 @@ class NativeBridge(QObject):
     # ---- 下载中心（本机下载历史，与共享下载统计完全独立） ----
     @Slot(result=str)
     def getLocalDownloads(self):
-        return json.dumps(self.window._load_local_downloads())
+        items = self.window._load_local_downloads()
+        # 历史记录里「未定位」的外部浏览器下载：尝试补一次定位（近 24 小时同名同大小）
+        changed = False
+        for it in items:
+            if it.get("dir"):
+                continue
+            if not it.get("name"):
+                continue
+            ddir, dpath = _locate_browser_download(
+                None, it.get("name"), it.get("size") or 0, age=86400)
+            if dpath or ddir:
+                it["dir"], it["path"] = ddir, dpath
+                changed = True
+        if changed:
+            self.window._save_local_downloads(items[:200])
+        return json.dumps(items)
 
     @Slot(str, result=bool)
     def removeLocalDownload(self, key):
@@ -225,10 +240,13 @@ class NativeBridge(QObject):
     def clearLocalDownloads(self):
         return self.window._clear_local_downloads()
 
-    @Slot(str)
-    def openDownloadFolder(self, dir):
-        """打开下载文件所在文件夹（Windows 资源管理器）。"""
+    @Slot(str, str)
+    def openDownloadFolder(self, dir, path=""):
+        """打开下载文件所在文件夹（Windows 资源管理器）；path 存在时选中该文件。"""
         try:
+            if path and os.path.isfile(path):
+                os.startfile(os.path.dirname(path))  # noqa
+                return
             if dir and os.path.isdir(dir):
                 os.startfile(dir)  # noqa
         except Exception:
@@ -285,6 +303,95 @@ class DragWebView(QWebEngineView):
 # --------------------------------------------------------------------------- #
 # 主窗口
 # --------------------------------------------------------------------------- #
+
+# ---------------- 浏览器下载目录探测（外部浏览器下载的保存位置） ----------------
+
+def _browser_download_dirs():
+    """探测 Chrome/Edge 下载目录与系统默认「下载」文件夹（Windows）。
+
+    外部浏览器下载本机共享时，浏览器自行决定保存位置；软件无法接管，
+    但可以读取浏览器配置定位其下载目录，让「下载中心」可跳转打开。
+    """
+    dirs = []
+    try:
+        base = os.environ.get("LOCALAPPDATA", "")
+        for sub in ("Google\\Chrome\\User Data\\Default\\Preferences",
+                    "Microsoft\\Edge\\User Data\\Default\\Preferences"):
+            p = os.path.join(base, sub)
+            if not os.path.isfile(p):
+                continue
+            try:
+                data = json.loads(open(p, encoding="utf-8").read())
+                d = (data.get("download") or {}).get("default_directory")
+                if d:
+                    d = os.path.expandvars(d)
+                    if os.path.isdir(d):
+                        dirs.append(d)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+            v, _ = winreg.QueryValueEx(k, "{374DE290-123F-4565-9164-39C4925E467B}")
+        d = os.path.expandvars(v)
+        if os.path.isdir(d):
+            dirs.append(d)
+    except Exception:
+        pass
+    # 去重
+    seen, out = set(), []
+    for d in dirs:
+        k = os.path.normcase(os.path.realpath(d))
+        if k not in seen:
+            seen.add(k)
+            out.append(d)
+    return out
+
+
+def _locate_browser_download(src_path=None, name="", size=0, age=240):
+    """在浏览器下载目录里找「最近下载的同名同大小」文件，返回 (目录, 文件路径)。
+
+    浏览器重名时会自动改名如 “name (1).ext”，这里按 basename 前缀匹配。
+    src_path 可空（历史记录补定位时无源文件）；size 直接传入。
+    """
+    try:
+        if size <= 0 and src_path and os.path.isfile(src_path):
+            size = os.path.getsize(src_path)
+    except Exception:
+        size = 0
+    if not name:
+        return "", ""
+    stem = os.path.splitext(name)[0]
+    now = time.time()
+    for d in _browser_download_dirs():
+        try:
+            for f in os.listdir(d):
+                p = os.path.join(d, f)
+                if not os.path.isfile(p):
+                    continue
+                try:
+                    if now - os.path.getmtime(p) > age:
+                        continue
+                except Exception:
+                    continue
+                if f != name and not os.path.splitext(f)[0].startswith(stem + " ("):
+                    continue
+                try:
+                    if size and abs(os.path.getsize(p) - size) > 16:
+                        continue
+                except Exception:
+                    continue
+                return d, p
+        except Exception:
+            continue
+    return "", ""
+
+
+# ---------------- 主窗口 ----------------
 
 class MainWindow(QMainWindow):
     def __init__(self, local_url, icon):
@@ -432,13 +539,21 @@ class MainWindow(QMainWindow):
                 if it.get("name") == name and it.get("dir") and now - float(it.get("ts", 0)) < 30:
                     return
             items = [it for it in items if it.get("key") != key]
+            # 外部浏览器下载时 dir 为空：尝试定位浏览器下载目录里的实际文件
+            ddir, dpath = "", ""
+            if os.path.isfile(full):
+                ddir, dpath = _locate_browser_download(full, name, size)
+                if not dpath:
+                    dirs = _browser_download_dirs()
+                    if dirs:
+                        ddir = dirs[0]
             items.insert(0, {"key": key, "name": name, "size": size,
-                             "dir": "", "path": "", "ts": now})
+                             "dir": ddir, "path": dpath, "ts": now})
             self._save_local_downloads(items[:200])
             self.view.page().runJavaScript(
                 "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
                 json.dumps({"type": "done", "id": key, "name": name,
-                            "dir": "", "path": "", "size": size,
+                            "dir": ddir, "path": dpath, "size": size,
                             "ts": now}, ensure_ascii=False) + ")")
         except Exception:
             pass
@@ -932,7 +1047,7 @@ def _selftest(app, win, svc):
         try:
             # selftest 开头的本机下载（127.0.0.1）应已由 server 回调（队列->主线程轮询）写入历史
             hist0 = win._load_local_downloads()
-            srv0 = [it for it in hist0 if it.get("name") == "示例文件.txt" and not it.get("dir")]
+            srv0 = [it for it in hist0 if it.get("name") == "示例文件.txt"]
             print("DL_LOCAL_API srv_note=%d hist=%d" % (len(srv0), len(hist0)), flush=True)
             win._save_local_downloads([{"key": "K1", "name": "测试文件.zip", "size": 123,
                                         "dir": str(tmp), "path": str(tmp / "a.zip"), "ts": time.time()}])

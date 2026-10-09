@@ -610,11 +610,13 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-tab.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .dlc-tabs .btn { margin-left: auto; }
 .dlc-body { max-height: 56vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
-.dlc-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+/* 下载中心列统一 grid 模板：表头与数据行共用同一列宽，防错位（UI 稳定） */
+.dlc-row { display: grid; grid-template-columns: 30px minmax(120px, 1fr) 84px 150px minmax(100px, 1fr) 84px; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .dlc-row:last-child { border-bottom: 0; }
-.dlc-row .row-icon { flex-shrink: 0; color: var(--faint); }
-.dlc-row.dlc-done { cursor: pointer; }
+.dlc-row .row-icon { color: var(--faint); }
 .dlc-row.dlc-done:hover { background: var(--accent-soft); }
+/* 下载中行：进度条结构，保持 flex 布局（无表头） */
+.dlc-row.dlc-running { display: flex; gap: 12px; }
 .dlc-main { flex: 1; min-width: 0; }
 .dlc-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dlc-sub { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--faint); margin-top: 4px; }
@@ -624,6 +626,11 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-pct { font-variant-numeric: tabular-nums; min-width: 38px; }
 .dlc-cell { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .dlc-head { font-size: 12px; color: var(--faint); background: var(--card); position: sticky; top: 0; }
+/* 保存位置列：文件夹图标按钮（与删除按钮同样式） */
+.dlc-pos { display: flex; align-items: center; justify-content: flex-start; min-width: 0; }
+.dlc-pos .btn-dloc { padding: 4px 6px; display: inline-flex; align-items: center; justify-content: center; }
+.dlc-pos .btn-dloc svg { width: 15px; height: 15px; }
+.dlc-unknown { font-size: 12px; color: var(--faint); }
 
 /* 右键菜单（固定浮层，不参与页面布局） */.ctx-menu {
   position: fixed;
