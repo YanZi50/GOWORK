@@ -1059,6 +1059,15 @@ def _selftest(app, win, svc):
 
     def shot5a2():
         run_js_checks("preview_md")
+        # 验证「原格式」页签可点击切换（监听此前绑定错误：点击无效）
+        win.view.page().runJavaScript(
+            "(function(){ var t = document.querySelector('.pv-tab[data-pv=raw]');"
+            " if (!t) return JSON.stringify({tab:false});"
+            " t.click();"
+            " var box = document.getElementById('pvBox');"
+            " return JSON.stringify({tab:true, cls: box ? box.className : '',"
+            " txt: box ? (box.textContent || '').slice(0, 32) : ''}); })()",
+            lambda res: checks.append("PREVIEW_RAW " + str(res)))
         snap(out4)
         # 关闭预览弹窗（清空内容），再切「下载中心」视图（切视图由 shot5b 完成）
         win.view.page().runJavaScript(

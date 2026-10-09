@@ -6,6 +6,14 @@
 
 ---
 
+## 前端/页面（static）
+
+### B-18 .md 预览「原格式」页签点击无效（2026-10-09，v2.6.3 修正）
+- **现象**：点「原格式」页签无反应，内容仍停留在渲染视图。
+- **根因**：点击监听绑在 `#pvBox` 上，而页签 `.pv-tabs` 是 `#pvBox` 的**兄弟元素**（不在其内部），点击事件不会冒泡到 `#pvBox`；首次修复时又漏掉 `const box = $("#pvBox")` 声明，`box && ...` 抛 ReferenceError，绑定再次中断。
+- **解决**：监听改绑到页签容器 `tabsEl`（`box.previousElementSibling || document.querySelector(".pv-tabs")`），并显式声明 `box`。
+- **防复现**：事件监听必须挂在真实的事件目标/冒泡路径上；修改后补了 selftest 断言（点击后 `#pvBox` 类名去除 `pv-md` 且内容为 Markdown 原文）。
+
 ## 服务内核（server.py）
 
 ### B-17 接管复制"先建空文件再写"导致测试轮询误判（2026-10-09，v2.6 修正）

@@ -509,6 +509,22 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
   justify-content: flex-end;
   margin-top: 8px;
 }
+/* 下载记录按设备分组：组头可折叠，组内明细不重复描边 */
+.dl-grp { margin: 2px 0; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); overflow: hidden; }
+.dl-grp-head { display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 14px; background: var(--surface-2); border: 0; color: var(--text);
+  font-size: 13px; cursor: pointer; text-align: left; }
+.dl-grp-head:hover { background: var(--surface-3); }
+.dl-grp-arrow { color: var(--faint); font-size: 12px; transition: transform 0.15s ease; }
+.dl-grp.is-open .dl-grp-arrow { transform: rotate(90deg); }
+.dl-grp-peer { font-weight: 600; white-space: nowrap; }
+.dl-grp-peer .dl-ip { color: var(--faint); font-family: var(--mono); font-size: 11px; font-weight: 400; }
+.dl-grp-stat { margin-left: auto; color: var(--faint); font-size: 12px; white-space: nowrap; }
+.dl-grp-body { padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+.dl-grp-body .dl-row { grid-template-columns: minmax(0, 2.2fr) 1fr 0.5fr 1fr;
+  background: transparent; border-color: transparent; padding: 7px 10px; }
+.dl-grp-tip { color: var(--faint); font-size: 12px; margin-right: auto; }
 
 /* ---------- 弹窗 ---------- */
 

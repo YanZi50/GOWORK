@@ -1053,30 +1053,56 @@
         el.innerHTML = '<div class="empty" style="padding:24px">暂无下载记录 — 文件还没被别人下载过</div>';
         return;
       }
-      const limit = 20;
-      const showAll = !!state.dlShowAll;
-      const shown = showAll ? items : items.slice(0, limit);
-      let html = '<div class="dl-row dl-head"><span class="dl-name">文件</span><span>共享</span><span>下载者</span><span>次数</span><span>最近下载</span></div>';
-      for (const d of shown) {
-        const peerName = d.peer && d.peer !== d.ip ? d.peer : "未知设备";
-        html += '<div class="dl-row">' +
-          '<span class="dl-name" title="' + esc(d.path) + '">' + esc(d.name) + "</span>" +
-          '<span>' + esc(d.share_name) + "</span>" +
-          '<span>' + esc(peerName) + '<span class="dl-ip">（' + esc(d.ip) + '）</span></span>' +
-          '<span>' + d.count + "</span>" +
-          '<span>' + fmtTime(d.last_ts) + "</span></div>";
+      // 按「设备名（IP）」分组统计：组头显示下载文件数/次数/最近时间，明细可折叠
+      const groups = {};
+      for (const d of items) {
+        const gk = (d.peer && d.peer !== d.ip) ? d.peer : "未知设备";
+        const key = gk + "|" + d.ip;
+        if (!groups[key]) groups[key] = { peer: gk, ip: d.ip, rows: [] };
+        groups[key].rows.push(d);
       }
-      html += '<div class="dl-foot">';
-      if (items.length > limit) {
-        html += '<button class="btn btn-ghost btn-sm" type="button" data-dl-more>' +
-          (showAll ? "收起" : "显示全部（共 " + items.length + " 条）") + "</button>";
-      }
-      html += '<button class="btn btn-danger btn-sm" type="button" data-dl-clear>清空记录</button></div>';
+      const gArr = Object.values(groups).map((g) => {
+        g.last = Math.max.apply(null, g.rows.map((r) => r.last_ts));
+        g.total = g.rows.reduce((s, r) => s + r.count, 0);
+        g.rows.sort((a, b) => b.last_ts - a.last_ts);
+        return g;
+      }).sort((a, b) => b.last - a.last);
+      const opened = state.dlGrpOpen || (state.dlGrpOpen = {});
+      let html = "";
+      gArr.forEach((g, gi) => {
+        const key = g.peer + "|" + g.ip;
+        const isOpen = opened[key] !== undefined ? opened[key] : gi === 0;
+        html += '<div class="dl-grp' + (isOpen ? " is-open" : "") + '" data-dlgrp="' + esc(key) + '">' +
+          '<button type="button" class="dl-grp-head" data-dlgrp-toggle="' + esc(key) + '">' +
+          '<span class="dl-grp-arrow">▸</span>' +
+          '<span class="dl-grp-peer">' + esc(g.peer) + '<span class="dl-ip">（' + esc(g.ip) + '）</span></span>' +
+          '<span class="dl-grp-stat">下载 ' + g.rows.length + ' 个文件 · ' + g.total + ' 次 · 最近 ' + fmtTime(g.last) + "</span>" +
+          "</button>";
+        if (isOpen) {
+          html += '<div class="dl-grp-body">' +
+            '<div class="dl-row dl-head"><span class="dl-name">文件</span><span>共享</span><span>次数</span><span>最近下载</span></div>';
+          for (const d of g.rows) {
+            html += '<div class="dl-row">' +
+              '<span class="dl-name" title="' + esc(d.path) + '">' + esc(d.name) + "</span>" +
+              '<span>' + esc(d.share_name) + "</span>" +
+              '<span>' + d.count + "</span>" +
+              '<span>' + fmtTime(d.last_ts) + "</span></div>";
+          }
+          html += "</div>";
+        }
+        html += "</div>";
+      });
+      html += '<div class="dl-foot"><span class="dl-grp-tip">共 ' + items.length + " 条记录 · " + gArr.length + " 台设备 · 点击设备可展开/折叠</span>" +
+        '<button class="btn btn-danger btn-sm" type="button" data-dl-clear>清空记录</button></div>';
       el.innerHTML = html;
-      const more = el.querySelector("[data-dl-more]");
-      if (more) more.addEventListener("click", () => {
-        state.dlShowAll = !state.dlShowAll;
-        renderDlList();
+      el.querySelectorAll("[data-dlgrp-toggle]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const key = btn.dataset.dlgrpToggle;
+          const grp = el.querySelector('[data-dlgrp="' + CSS.escape(key) + '"]');
+          const nowOpen = grp && grp.classList.contains("is-open");
+          opened[key] = !nowOpen;
+          renderDlList();
+        });
       });
       const clear = el.querySelector("[data-dl-clear]");
       if (clear) clear.addEventListener("click", async () => {
@@ -1361,14 +1387,18 @@
       };
       xhr.onload = () => {
         applyPv();
+        // 页签在 #pvBox 外层（兄弟元素），监听必须挂在页签容器上，否则点击无效
         const box = $("#pvBox");
-        if (box) box.addEventListener("click", (ev) => {
-          const btn = ev.target.closest("[data-pv]");
-          if (!btn || !box) return;
-          pvMode = btn.dataset.pv;
-          document.querySelectorAll("#pvBox + .pv-tabs .pv-tab, .pv-tabs .pv-tab").forEach(b => b.classList.toggle("is-active", b === btn));
-          applyPv();
-        });
+        const tabsEl = (box && box.previousElementSibling) || document.querySelector(".pv-tabs");
+        if (tabsEl) {
+          tabsEl.addEventListener("click", (ev) => {
+            const btn = ev.target.closest("[data-pv]");
+            if (!btn) return;
+            pvMode = btn.dataset.pv;
+            tabsEl.querySelectorAll(".pv-tab").forEach(b => b.classList.toggle("is-active", b === btn));
+            applyPv();
+          });
+        }
       };
       xhr.onerror = () => {
         const box = $("#pvBox");
