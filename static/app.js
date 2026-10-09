@@ -808,7 +808,9 @@
       "</div></form></div></div>";
 
     html += '<div class="section-head" style="margin-top:6px"><div><h2 class="section-title" style="font-size:15px">已配置的共享</h2>' +
-      '<div class="section-sub">点击「编辑」展开修改设置</div></div></div>' +
+      '<div class="section-sub">点击「编辑」展开修改设置</div></div>' +
+      '<input class="input input-search" id="shareSearch" type="text" placeholder="搜索共享…" value="' +
+      esc(state.shareSearch || "") + '"></div>' +
       '<div class="admin-list" id="adminList"></div>';
 
     // 高级设置：开机自启 / 服务端口 / 数据位置 / 清空下载记录（展开状态跨重渲染保持）
@@ -1121,13 +1123,22 @@
   async function renderAdminList() {
     const listEl = $("#adminList");
     if (!listEl) return;
-    const shares = state.config.shares || [];
-    if (!shares.length) {
+    const all = state.config.shares || [];
+    if (!all.length) {
       listEl.innerHTML = '<div class="empty" style="padding:24px">尚未配置共享 — 点上方「添加共享文件夹」</div>';
       return;
     }
+    // 搜索过滤（名称/路径）+ 数量约束：默认只显示前 6 个，可展开全部
+    const kw = (state.shareSearch || "").trim().toLowerCase();
+    const shares = kw
+      ? all.filter((s) => (s.name || "").toLowerCase().includes(kw) ||
+          (s.path || "").toLowerCase().includes(kw))
+      : all;
+    const LIMIT = 6;
+    const showAll = !!state.acShowAll;
+    const shown = showAll ? shares : shares.slice(0, LIMIT);
     let html = "";
-    for (const s of shares) {
+    for (const s of shown) {
       const badge = s.perm === "public"
         ? '<span class="badge badge-public">公开</span>'
         : s.perm === "password"
@@ -1166,7 +1177,27 @@
         '<button class="btn btn-ghost btn-sm" type="button" data-ac-cancel>收起</button></div>' +
         "</div></div>";
     }
+    if (shares.length > LIMIT) {
+      html += '<div class="dl-foot"><span class="dl-grp-tip">共 ' + shares.length + " 个共享</span>" +
+        '<button class="btn btn-ghost btn-sm" type="button" data-ac-more>' +
+        (showAll ? "收起" : "显示全部") + "</button></div>";
+    }
     listEl.innerHTML = html;
+
+    // 搜索框（只绑一次，重渲染不重复挂监听）
+    const sea = $("#shareSearch");
+    if (sea && !sea.dataset.bound) {
+      sea.dataset.bound = "1";
+      sea.addEventListener("input", () => {
+        state.shareSearch = sea.value;
+        renderAdminList();
+      });
+    }
+    const more = listEl.querySelector("[data-ac-more]");
+    if (more) more.addEventListener("click", () => {
+      state.acShowAll = !state.acShowAll;
+      renderAdminList();
+    });
 
     // 展开/收起 + 删除 + 保存（事件委托）
     listEl.addEventListener("click", async (ev) => {
