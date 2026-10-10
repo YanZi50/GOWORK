@@ -8,6 +8,12 @@
 
 ## 前端/页面（static）
 
+### B-23 QtWebEngine 原生 confirm 键盘焦点循环：取消弹窗无限弹、取消失效（2026-10-10，v2.6.20 修正）
+- **现象**：下载中（含已暂停）点「取消」弹出确认框，点 OK 后弹窗**立刻又弹出来**，循环不止；`cancelDownload` 没被调用，未完成 `.part` 不删除。
+- **根因**：取消确认用了浏览器原生 `confirm()`。QtWebEngine 下 confirm 对话框关闭后，触发它的按钮仍保持键盘焦点，**Enter/空格会再次触发该按钮 click** → 又进 `confirm()` → 无限循环；原生 confirm 又是阻塞式，循环期间 JS 卡死，取消请求永远发不出去。
+- **解决**：改用**自绘 DOM 确认弹层**（复用 `.modal` 样式，按钮 `data-dl-confirm-yes/no`）：点「确认取消」先 `m.remove()` 移除弹层（焦点/事件源随之消失）再调 `window.native.cancelDownload(jid)`；弹层存在时防重入。
+- **防复现**：QtWebEngine 壳内**禁用原生 confirm/alert/prompt**（行为不可控），统一自绘弹层；凡「弹窗+按钮」交互必须保证关闭弹层后原按钮不再持有焦点。selftest 可断言点击取消后出现 `[data-dl-confirm-yes]` 弹层。
+
 ### B-18 .md 预览「原格式」页签点击无效（2026-10-09，v2.6.3 修正）
 - **现象**：点「原格式」页签无反应，内容仍停留在渲染视图。
 - **根因**：点击监听绑在 `#pvBox` 上，而页签 `.pv-tabs` 是 `#pvBox` 的**兄弟元素**（不在其内部），点击事件不会冒泡到 `#pvBox`；首次修复时又漏掉 `const box = $("#pvBox")` 声明，`box && ...` 抛 ReferenceError，绑定再次中断。
