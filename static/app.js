@@ -432,6 +432,20 @@
     }, 600);
   }
 
+  // 任务 done/canceled 后：仅移除对应行（不整表重渲染防跳动），空列表补 empty 文案、页签计数同步
+  function dropPyRow(id) {
+    if (state.view !== "dlcenter" || state.dlTab !== "running") return;
+    const row = document.querySelector('.dlc-running[data-dlr="' + id + '"]');
+    if (row) row.remove();
+    const tab = document.querySelector('.dlc-tab[data-dlc="running"]');
+    const n = Object.keys(state.dlRunning).length;
+    if (tab) tab.textContent = "下载中（" + n + "）";
+    const body = document.querySelector(".dlc-body");
+    if (body && !body.querySelector(".dlc-row")) {
+      body.innerHTML = '<div class="empty">没有正在下载的任务</div>';
+    }
+  }
+
   function applyPyDls(items) {
     const seen = {};
     for (const it of items) {
@@ -441,12 +455,14 @@
       if (it.state === "done") {
         if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
         resetPyBtn(it.id);
+        dropPyRow(it.id);
         loadLocalDownloads(); // 完成 → 刷新历史
         continue;
       }
       if (it.state === "canceled") {
         if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
         resetPyBtn(it.id);
+        dropPyRow(it.id);
         continue;
       }
       const prevState = cur && cur.pyState;
@@ -471,7 +487,7 @@
           const stEl = row.querySelector(".dlc-state");
           if (bar && it.total > 0) bar.style.width = Math.min(100, it.pct || 0) + "%";
           if (pctEl) pctEl.textContent = it.total > 0 ? (it.pct || 0) + "%" : "…";
-          if (spEl) spEl.textContent = it.state === "paused" ? "已暂停" : fmtSpeed(it.speed);
+          if (spEl) spEl.textContent = it.state === "paused" ? "0 B/s" : fmtSpeed(it.speed);
           if (stEl) stEl.textContent = it.state === "paused" ? "已暂停" : "下载中";
         } else if (!row || prevState !== it.state) {
           renderDlCenter();
@@ -575,11 +591,38 @@
       const cc = ev.target.closest("[data-dl-cancel]");
       if (cc) {
         ev.stopPropagation();
-        if (!confirm("确定取消该下载？未完成的部分将被删除。")) return;
-        window.native.cancelDownload(cc.dataset.dlCancel);
+        showDlCancelConfirm(cc.dataset.dlCancel);
         return;
       }
     });
+  }
+
+  // 自绘确认弹层：QtWebEngine 原生 confirm 有键盘焦点循环 bug（点 OK 后按钮仍聚焦，
+  // Enter 会持续触发 click → 弹窗无限弹、取消失效），改用 DOM 弹层，点「确认取消」即移除+执行。
+  let __dlConfirmEl = null;
+  function showDlCancelConfirm(jid) {
+    if (__dlConfirmEl) return; // 防重入
+    const m = document.createElement("div");
+    m.className = "modal";
+    m.innerHTML = '<div class="modal-card" style="max-width:360px">' +
+      '<div class="modal-head"><h3 class="modal-title">取消下载</h3></div>' +
+      '<p class="modal-desc">确定取消该下载？未完成的部分将被删除。</p>' +
+      '<div class="modal-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-dl-confirm-no>再想想</button>' +
+      '<button type="button" class="btn btn-danger btn-sm" data-dl-confirm-yes>确认取消</button>' +
+      "</div></div>";
+    m.addEventListener("click", (e) => {
+      if (e.target.closest("[data-dl-confirm-no]") || e.target === m) {
+        __dlConfirmEl = null;
+        m.remove();
+      } else if (e.target.closest("[data-dl-confirm-yes]")) {
+        __dlConfirmEl = null;
+        m.remove(); // 先移除弹层，再执行取消（消除焦点/事件回流）
+        try { window.native.cancelDownload(jid); } catch (err) { /* ignore */ }
+      }
+    });
+    document.body.appendChild(m);
+    __dlConfirmEl = m;
   }
 
   function dlcRunningHtml(running) {
