@@ -460,8 +460,8 @@
   }
 
   // 单行 patch：只更新进度/速度/状态文字，不重建整行整表（hover 不丢、布局不跳）。
-  // 按钮区只在「状态切换」时重建（paused/running/error 互转），进度轮询不碰按钮节点
-  // ——否则 600ms 重建一次按钮，鼠标悬停时按钮像在抽动。
+  // 状态切换时按钮区也不重建节点——只改控制按钮的文案/委托标记/样式，
+  // 避免点「暂停」瞬间按钮消失重建（悬停丢失、视觉抽动）。
   function patchDlRow(it, row, prevState) {
     if (!row) return;
     const bar = row.querySelector(".dlc-bar-fill");
@@ -480,7 +480,20 @@
       if (paused) stEl.style.setProperty("color", "var(--warn,#e6a23c)");
       else stEl.style.removeProperty("color");
     }
-    if (actions && prevState !== it.state) actions.innerHTML = dlcActionsHtml(it);
+    if (actions && prevState !== it.state) {
+      const ctl = actions.querySelector("[data-dl-pause],[data-dl-resume],[data-dl-retry]");
+      if (ctl) {
+        // 原地修改按钮（不重建节点）：暂停↔继续↔重试
+        ctl.textContent = errored ? "重试" : (paused ? "继续" : "暂停");
+        delete ctl.dataset.dlPause;
+        delete ctl.dataset.dlResume;
+        delete ctl.dataset.dlRetry;
+        if (errored) ctl.dataset.dlRetry = it.id;
+        else if (paused) ctl.dataset.dlResume = it.id;
+        else ctl.dataset.dlPause = it.id;
+        ctl.className = "btn " + (errored || paused ? "btn-primary" : "btn-ghost") + " btn-sm";
+      }
+    }
   }
 
   function applyPyDls(items) {
@@ -563,7 +576,7 @@
     let html = '<div class="section-head"><div><h2 class="section-title">下载中心</h2>' +
       '<div class="section-sub">本机下载进度与历史（已下载文件可点击打开所在文件夹）</div></div></div>' +
       '<div class="dlc-tabs"><button class="dlc-tab' + (active ? " is-active" : "") + '" data-dlc="running" type="button">下载中（' + running.length + '）</button>' +
-      '<button class="dlc-tab' + (!active ? " is-active" : "") + '" data-dlc="done" type="button">已完成（' + done.length + '）</button>' +
+      '<button class="dlc-tab' + (!active ? " is-active" : "") + '" data-dlc="done" type="button">下载记录（' + done.length + '）</button>' +
       (!active ? '<button class="btn btn-ghost btn-sm" type="button" id="dlcRefresh">⟳ 刷新</button>' +
         '<button class="btn btn-ghost btn-sm" type="button" id="dlcClear">清空全部记录</button>' : "") + "</div>" +
       '<div class="dlc-body">' + (active ? dlcRunningHtml(running) : dlcDoneHtml(done)) + "</div>";
@@ -638,11 +651,14 @@
   let __dlConfirmEl = null;
   function showDlCancelConfirm(jid) {
     if (__dlConfirmEl) return; // 防重入
+    const isPy = String(jid || "").indexOf("py") === 0;
     const m = document.createElement("div");
     m.className = "modal";
     m.innerHTML = '<div class="modal-card" style="max-width:360px">' +
       '<div class="modal-head"><h3 class="modal-title">取消下载</h3></div>' +
-      '<p class="modal-desc">确定取消该下载？未完成的部分将被删除。</p>' +
+      '<p class="modal-desc">' + (isPy
+        ? "确定取消该下载？已下载的部分会保留，重新下载可从中断处继续。"
+        : "确定取消该下载？已复制的部分将被删除。") + "</p>" +
       '<div class="modal-actions">' +
       '<button type="button" class="btn btn-ghost btn-sm" data-dl-confirm-no>再想想</button>' +
       '<button type="button" class="btn btn-danger btn-sm" data-dl-confirm-yes>确认取消</button>' +
@@ -674,9 +690,9 @@
         : (paused
           ? '<button class="btn btn-primary btn-sm" type="button" data-dl-resume="' + esc(it.id) + '">继续</button>'
           : '<button class="btn btn-ghost btn-sm" type="button" data-dl-pause="' + esc(it.id) + '">暂停</button>')) +
-        '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>';
+        '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消（保留已下载部分，重新下载可继续）">取消</button>';
     } else {
-      inner = '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>';
+      inner = '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除已复制部分">取消</button>';
     }
     return '<div class="dlc-actions">' + inner + "</div>";
   }

@@ -228,10 +228,7 @@ class DownloadManager:
                     while True:
                         if j["_cancel"].is_set():
                             j["state"] = "canceled"
-                            try:
-                                os.remove(j["part"])
-                            except OSError:
-                                pass
+                            # .part 保留：取消后可断点续传（v2.6.23 起不删除已下载部分）
                             self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
                             return
                         if j["state"] == "paused":
@@ -246,14 +243,10 @@ class DownloadManager:
                         if now - j["_win_start"] >= 1.0:
                             j["speed"] = (j["done"] - j["_win_done"]) / (now - j["_win_start"])
                             j["_win_start"], j["_win_done"] = now, j["done"]
-            # 落盘前最后一道取消检查：取消已发出则丢弃已下载部分，不落盘、不进历史
+            # 落盘前最后一道取消检查：取消已发出则停止（.part 保留可续传），不落盘
             if j["_cancel"].is_set():
                 j["state"] = "canceled"
                 j["speed"] = 0.0
-                try:
-                    os.remove(j["part"])
-                except OSError:
-                    pass
                 self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
                 return
             os.replace(j["part"], j["path"])  # 原子完成：.part -> 正式文件
@@ -301,16 +294,13 @@ class DownloadManager:
             return
         j["_cancel"].set()
         j["_pause"].clear()
-        # 线程已退出（error 等终态）时取消事件无人消费：直接置 canceled 并清理 .part，
-        # 否则任务永远停在 error、前端「取消」看起来没反应
+        # 线程已退出（error 等终态）时取消事件无人消费：直接置 canceled，
+        # 否则任务永远停在 error、前端「取消」看起来没反应。
+        # .part 保留：取消后重新下载可断点续传（B-25 调整，v2.6.23 起取消不删已下载部分）
         th = j.get("_thread")
         if j["state"] != "running" or (th and not th.is_alive()):
             j["state"] = "canceled"
             j["speed"] = 0.0
-            try:
-                os.remove(j["part"])
-            except OSError:
-                pass
             self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
 
     def snapshot(self, limit=60):
