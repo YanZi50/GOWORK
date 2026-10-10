@@ -245,6 +245,15 @@ class DownloadManager:
                         if now - j["_win_start"] >= 1.0:
                             j["speed"] = (j["done"] - j["_win_done"]) / (now - j["_win_start"])
                             j["_win_start"], j["_win_done"] = now, j["done"]
+            # 落盘前最后一道取消检查：取消已发出则丢弃已下载部分，不落盘、不进历史
+            if j["_cancel"].is_set():
+                j["state"] = "canceled"
+                j["speed"] = 0.0
+                try:
+                    os.remove(j["part"])
+                except OSError:
+                    pass
+                return
             os.replace(j["part"], j["path"])  # 原子完成：.part -> 正式文件
             j["state"] = "done"
             j["speed"] = 0.0
@@ -316,6 +325,8 @@ class DownloadManager:
     def _on_done(self, j):
         """完成：写本机下载历史 + 经主线程队列通知前端（托盘/列表刷新）。"""
         try:
+            if j.get("_cancel", threading.Event()).is_set():
+                return  # 落盘后、写历史前收到取消：不进历史、不通知
             items = self.win._load_local_downloads()
             key = os.path.normcase(os.path.realpath(j["path"]))
             items = [it for it in items if it.get("key") != key]
@@ -743,7 +754,9 @@ class MainWindow(QMainWindow):
             p = self._local_dl_file()
             if p.exists():
                 data = json.loads(p.read_text(encoding="utf-8"))
-                return data.get("items", [])
+                # 过滤 .part 残留（取消/中断的临时文件不算下载完成，不进已完成/历史）
+                return [it for it in data.get("items", [])
+                        if not str(it.get("name", "")).lower().endswith(".part")]
         except Exception:
             pass
         return []
@@ -752,6 +765,9 @@ class MainWindow(QMainWindow):
         try:
             p = self._local_dl_file()
             p.parent.mkdir(parents=True, exist_ok=True)
+            # 写前同样过滤 .part 残留（防历史里混入临时文件）
+            items = [it for it in items
+                     if not str(it.get("name", "")).lower().endswith(".part")]
             p.write_text(json.dumps({"v": 1, "items": items}, ensure_ascii=False),
                          encoding="utf-8")
             return True
@@ -1520,6 +1536,15 @@ def _selftest(app, win, svc):
             print("PYDL_CTRL pause=%s resume=%s cancel=%s" % (_p1, _p2, _p3), flush=True)
             if not (_p1 and _p2 and _p3):
                 print("PYDL_CTRL_FAIL", flush=True)
+            # 历史过滤：取消/中断的 .part 残留不得进入已完成/历史（读写两侧）
+            win._save_local_downloads([
+                {"key": "k1", "name": "残片.txt.part", "size": 1, "dir": "d", "path": "p", "ts": 1},
+                {"key": "k2", "name": "正常文件.txt", "size": 1, "dir": "d", "path": "p", "ts": 2}])
+            _hist2 = win._load_local_downloads()
+            _filt_ok = len(_hist2) == 1 and _hist2[0].get("name") == "正常文件.txt"
+            print("PYDL_HIST_FILTER=%s n=%d" % (_filt_ok, len(_hist2)), flush=True)
+            if not _filt_ok:
+                print("PYDL_HIST_FILTER_FAIL", flush=True)
         except Exception as e:
             print("PYDL_ERR", repr(e), flush=True)
         win.view.page().runJavaScript(

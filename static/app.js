@@ -512,7 +512,9 @@
     if (!window.native) return;
     window.native.getLocalDownloads(function (json) {
       try {
-        state.dlHistory = JSON.parse(json || "[]");
+        const list = JSON.parse(json || "[]");
+        // 过滤 .part 临时文件残留（取消/中断的下载不算已完成）
+        state.dlHistory = list.filter((it) => !String(it.name || "").toLowerCase().endsWith(".part"));
       } catch (e) { state.dlHistory = []; }
       if (state.view === "dlcenter") renderDlCenter();
     });
