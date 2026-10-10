@@ -16,6 +16,12 @@
 
 ## 服务内核（server.py）
 
+### B-20 pythonw 下 ipconfig 子进程弹出黑窗口（2026-10-10，v2.6.16 修正）
+- **现象**：点击「置顶」后弹出一个黑色命令行窗口闪一下；此前"启动时也可能闪一次"。
+- **根因**：置顶成功后前端 `refreshConfig()` → GET /api/config → `get_local_ips()` → `subprocess.run(["ipconfig"])`。父进程是无控制台的 pythonw（源码版）/ --noconsole（打包版），Windows 会为控制台子进程**新建临时控制台窗口**。
+- **解决**：① ipconfig 调用加 `creationflags=CREATE_NO_WINDOW`（0x08000000，仅 Windows）；② `get_local_ips()` 结果**缓存复用**（IP 一般不变，后续 config 请求不再跑子进程；空结果不缓存避免启动早期误缓存）。
+- **防复现**：无控制台父进程下禁止裸跑控制台子进程；凡 subprocess 一律带 CREATE_NO_WINDOW（Windows）。
+
 ### B-19 ipconfig 解析在中文 Windows 上按 UTF-8 解码崩溃（2026-10-10，v2.6.15 修正）
 - **现象**：`get_local_ips()` 的 ipconfig 解析每次调用刷 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd2`（源码跑启动即出现，打包版吞错但日志噪音大）。
 - **根因**：`subprocess.run(..., text=True)` 默认用 locale/UTF-8 解码，而中文 Windows 的 `ipconfig` 输出是 **GBK/cp936** → 解码抛错；虽有兜底逻辑但错误已产生。

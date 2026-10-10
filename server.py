@@ -116,17 +116,28 @@ def hash_password(password, salt=None):
     return salt, digest
 
 
-def get_local_ips():
+_LOCAL_IPS_CACHE = None
+
+
+def get_local_ips(refresh=False):
     """枚举本机所有可用网卡的 IPv4（排除回环与虚拟/VPN 网卡），多网卡场景全部返回。
 
     1) Windows 优先解析 ipconfig：能拿到全部物理网卡 IP，不依赖外网可达性；
     2) 主机名解析兜底；3) UDP 默认路由探测兜底（8.8.8.8 不可达时静默跳过）。
+    结果缓存复用（IP 一般不变）；首次调用在无控制台父进程（pythonw/--noconsole）下
+    会弹黑窗口，故 ipconfig 用 CREATE_NO_WINDOW 静默执行。
     """
+    global _LOCAL_IPS_CACHE
+    if _LOCAL_IPS_CACHE is not None and not refresh:
+        return _LOCAL_IPS_CACHE
     ips = set()
     try:
         import re
         import subprocess
-        raw = subprocess.run(["ipconfig"], capture_output=True, timeout=10).stdout or b""
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW：不弹黑窗口
+        raw = subprocess.run(["ipconfig"], capture_output=True, timeout=10, **kwargs).stdout or b""
         # 中文 Windows 的 ipconfig 输出为 GBK/cp936：显式解码，禁止 text=True 默认 UTF-8
         try:
             out = raw.decode("gbk", errors="replace")
@@ -170,6 +181,8 @@ def get_local_ips():
             s.close()
     except Exception:
         pass
+    if ips:  # 仅缓存有效结果；空结果不缓存（网卡未就绪时下次重算）
+        _LOCAL_IPS_CACHE = sorted(ips)
     return sorted(ips)
 
 
