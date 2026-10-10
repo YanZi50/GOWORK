@@ -16,6 +16,12 @@
 
 ## 服务内核（server.py）
 
+### B-21 本机+已设下载位置时 `/api/download` 返回 HTML 结果页，桌面下载器把结果页当文件存（2026-10-10，v2.6.18 修正）
+- **现象**：桌面端 Python 下载器（断点续传/队列）下载本机共享文件，文件大小异常（约 1KB，实为结果页 HTML），内容错乱；独立脚本复现下载器无 bug，selftest `PYDL_RESUME` 文件尺寸 1037≠23。
+- **根因**：server `_api_download` 对「本机 + 已配置下载位置」走**接管复制分支**：把文件复制到下载目录后返回 `_html_result` 完成页（这是 v2.5 本机浏览器下载的既定行为）。Python 下载器请求同样命中该分支 → 拿到的是 HTML 页面而非文件流。
+- **解决**：接管分支条件加 `and not qs.get("raw")`；`?raw=1` 强制走 `_send_file` 文件流（仍 record_download）。桌面下载器 `DownloadManager.start` 统一在 URL 追加 `raw=1`。
+- **防复现**：凡程序化下载（下载器/断点续传/脚本）一律带 `raw=1`；浏览器普通下载不带 raw 仍走接管。selftest 断言 PYDL_RESUME 校验「文件大小=源文件、part 消失」。
+
 ### B-20 pythonw 下 ipconfig 子进程弹出黑窗口（2026-10-10，v2.6.16 修正）
 - **现象**：点击「置顶」后弹出一个黑色命令行窗口闪一下；此前"启动时也可能闪一次"。
 - **根因**：置顶成功后前端 `refreshConfig()` → GET /api/config → `get_local_ips()` → `subprocess.run(["ipconfig"])`。父进程是无控制台的 pythonw（源码版）/ --noconsole（打包版），Windows 会为控制台子进程**新建临时控制台窗口**。
