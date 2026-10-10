@@ -20,6 +20,7 @@ import io
 import json
 import os
 import queue
+import shutil
 import struct
 import sys
 import threading
@@ -159,6 +160,169 @@ def build_icons():
 
 
 # --------------------------------------------------------------------------- #
+# Python 下载器：断点续传 + 传输队列（暂停/继续/重试/取消）
+# --------------------------------------------------------------------------- #
+
+def _dl_pct(done, total):
+    if not total:
+        return 0
+    return min(100, int(done * 100 / total))
+
+
+class DownloadManager:
+    """桌面端下载器：流式 Range 分片写盘，.part 断点续传，多任务队列。
+    状态机：running -> paused / error / done / canceled
+    """
+
+    CHUNK = 1 << 20  # 1MB
+
+    def __init__(self, win):
+        self.win = win
+        self.jobs = {}
+        self._lock = threading.Lock()
+
+    def start(self, url, name, dest_dir, size_hint=0):
+        """新建任务并立即开始下载。返回任务 id。"""
+        # raw=1：本机地址走「接管复制」会返回 HTML 结果页而非文件流，
+        # 下载器必须强制文件流（服务器据此跳过接管，见 server._api_download）。
+        if url:
+            url = url + ("&" if "?" in url else "?") + "raw=1"
+        safe = os.path.basename((name or "").replace("\\", "/")) or "download"
+        path = os.path.join(dest_dir or ".", safe)
+        base, ext = os.path.splitext(path)
+        n = 1
+        while os.path.exists(path):  # 同名已完成文件：自动加 (1)(2)…
+            path = "%s (%d)%s" % (base, n, ext)
+            n += 1
+        part = path + ".part"
+        done = os.path.getsize(part) if os.path.isfile(part) else 0  # 断点：从 .part 恢复
+        job = {
+            "id": "py" + uuid.uuid4().hex[:10],
+            "url": url, "name": safe, "path": path, "part": part,
+            "dir": dest_dir or "", "done": done, "total": size_hint or 0,
+            "state": "running", "error": "", "ts": time.time(), "speed": 0.0,
+            "_pause": threading.Event(), "_cancel": threading.Event(),
+            "_win_start": time.time(), "_win_done": done, "_thread": None,
+        }
+        with self._lock:
+            self.jobs[job["id"]] = job
+        job["_thread"] = threading.Thread(target=self._run, args=(job,), daemon=True)
+        job["_thread"].start()
+        return job["id"]
+
+    def _run(self, j):
+        import urllib.request
+        try:
+            headers = {"User-Agent": "LANShare-Downloader/2.6"}
+            if j["done"]:
+                headers["Range"] = "bytes=%d-" % j["done"]  # 断点续传
+            req = urllib.request.Request(j["url"], headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                if j["total"] <= 0:
+                    total = int(r.headers.get("Content-Length") or 0)
+                    if getattr(r, "status", 200) == 206 and j["done"]:
+                        total += j["done"]  # 206 返回的是剩余长度
+                    j["total"] = total
+                mode = "ab" if j["done"] else "wb"
+                with open(j["part"], mode) as f:
+                    while True:
+                        if j["_cancel"].is_set():
+                            j["state"] = "canceled"
+                            try:
+                                os.remove(j["part"])
+                            except OSError:
+                                pass
+                            return
+                        if j["state"] == "paused":
+                            j["_pause"].wait(0.3)  # 暂停：阻塞轮询，不读取数据
+                            continue
+                        chunk = r.read(self.CHUNK)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        j["done"] += len(chunk)
+                        now = time.time()
+                        if now - j["_win_start"] >= 1.0:
+                            j["speed"] = (j["done"] - j["_win_done"]) / (now - j["_win_start"])
+                            j["_win_start"], j["_win_done"] = now, j["done"]
+            os.replace(j["part"], j["path"])  # 原子完成：.part -> 正式文件
+            j["state"] = "done"
+            j["speed"] = 0.0
+            self._on_done(j)
+        except Exception as e:
+            j["state"] = "error"
+            j["error"] = str(e)
+            j["speed"] = 0.0
+
+    def pause(self, jid):
+        j = self.jobs.get(jid)
+        if j and j["state"] == "running":
+            j["state"] = "paused"
+            j["_pause"].set()
+
+    def resume(self, jid):
+        j = self.jobs.get(jid)
+        if j and j["state"] == "paused":
+            j["state"] = "running"
+            j["_pause"].clear()
+
+    def retry(self, jid):
+        """重试：从 .part 断点继续（error/canceled/paused 均可重试）。"""
+        j = self.jobs.get(jid)
+        if not j or j["state"] == "done":
+            return
+        j["_cancel"].clear()
+        j["_pause"].clear()
+        j["state"] = "running"
+        j["error"] = ""
+        j["done"] = os.path.getsize(j["part"]) if os.path.isfile(j["part"]) else 0
+        j["total"] = 0
+        j["speed"] = 0.0
+        j["_win_start"], j["_win_done"] = time.time(), j["done"]
+        j["_thread"] = threading.Thread(target=self._run, args=(j,), daemon=True)
+        j["_thread"].start()
+
+    def cancel(self, jid):
+        j = self.jobs.get(jid)
+        if not j or j["state"] in ("done", "canceled"):
+            return
+        j["_cancel"].set()
+        j["_pause"].clear()
+
+    def snapshot(self, limit=60):
+        with self._lock:
+            items = []
+            for j in self.jobs.values():
+                items.append({
+                    "id": j["id"], "name": j["name"], "dir": j["dir"],
+                    "path": j["path"], "done": j["done"], "total": j["total"],
+                    "state": j["state"], "error": j["error"], "ts": j["ts"],
+                    "speed": round(j["speed"], 1),
+                    "pct": _dl_pct(j["done"], j["total"]),
+                })
+            items.sort(key=lambda x: x["ts"], reverse=True)
+            return items[:limit]
+
+    def _on_done(self, j):
+        """完成：写本机下载历史 + 经主线程队列通知前端（托盘/列表刷新）。"""
+        try:
+            items = self.win._load_local_downloads()
+            key = os.path.normcase(os.path.realpath(j["path"]))
+            items = [it for it in items if it.get("key") != key]
+            size = j["total"] or (os.path.getsize(j["path"]) if os.path.isfile(j["path"]) else 0)
+            items.insert(0, {"key": key, "name": j["name"], "size": size,
+                             "dir": j["dir"], "path": j["path"], "ts": time.time()})
+            self.win._save_local_downloads(items[:200])
+        except Exception:
+            pass
+        # 切主线程做 UI 通知（下载线程不可直接调 Qt）
+        try:
+            self.win._dl_note_q.put({"py_done": j})
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------- #
 # 原生桥（JS <-> Python）
 # --------------------------------------------------------------------------- #
 
@@ -167,7 +331,40 @@ class NativeBridge(QObject):
         super().__init__()
         self.window = window
 
+    @Slot(str, str, result=str)
+    def startDownload(self, url, name):
+        """Python 下载器：断点续传 + 队列。返回 JSON 摘要（含任务 id）。"""
+        dl_dir = (S.app.cfg.get("download_dir") or "").strip()
+        if not dl_dir:
+            return json.dumps({"ok": False, "error": "未设置下载位置，请在高级设置中先选择"})
+        if not os.path.isdir(dl_dir):
+            return json.dumps({"ok": False, "error": "下载位置不存在，请在高级设置中重新选择"})
+        jid = self.window.dl_mgr.start(url or "", name or "download", dl_dir)
+        return json.dumps({"ok": True, "id": jid, "name": name or "download",
+                           "dir": dl_dir})
+
     @Slot(result=str)
+    def getDownloads(self):
+        """传输队列全量状态（前端轮询）。"""
+        return json.dumps({"items": self.window.dl_mgr.snapshot()})
+
+    @Slot(str)
+    def pauseDownload(self, jid):
+        self.window.dl_mgr.pause(jid)
+
+    @Slot(str)
+    def resumeDownload(self, jid):
+        self.window.dl_mgr.resume(jid)
+
+    @Slot(str)
+    def retryDownload(self, jid):
+        self.window.dl_mgr.retry(jid)
+
+    @Slot(str)
+    def cancelDownload(self, jid):
+        self.window.dl_mgr.cancel(jid)
+
+    @Slot(str, result=str)
     def pickFolder(self):
         path = QFileDialog.getExistingDirectory(None, "选择要共享的文件夹")
         return path or ""
@@ -458,6 +655,9 @@ class MainWindow(QMainWindow):
         self._note_timer.timeout.connect(self._drain_dl_notes)
         self._note_timer.start(120)
 
+        # Python 下载器（断点续传 + 传输队列）
+        self.dl_mgr = DownloadManager(self)
+
         self.view.load(QUrl(local_url))
 
     @staticmethod
@@ -497,9 +697,29 @@ class MainWindow(QMainWindow):
     def _drain_dl_notes(self):
         try:
             while True:
-                share, rel, full, saved = self._dl_note_q.get_nowait()
-                self._note_local_download(share, rel, full, saved)
+                item = self._dl_note_q.get_nowait()
+                if isinstance(item, dict) and item.get("py_done"):
+                    self._py_done_ui(item["py_done"])
+                else:
+                    share, rel, full, saved = item
+                    self._note_local_download(share, rel, full, saved)
         except queue.Empty:
+            pass
+
+    def _py_done_ui(self, j):
+        """Python 下载器完成（主线程）：托盘通知 + 前端列表刷新。"""
+        try:
+            self.view.page().runJavaScript(
+                "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
+                json.dumps({"type": "done", "id": j["id"], "name": j["name"],
+                            "dir": j["dir"], "path": j["path"],
+                            "size": j["total"], "ts": time.time()},
+                           ensure_ascii=False) + ")")
+            self.win.tray.showMessage(
+                "下载完成",
+                "%s\n已保存到：%s" % (j["name"], j["dir"]),
+                QSystemTrayIcon.Information, 4000)
+        except Exception:
             pass
 
     def _local_dl_file(self):
@@ -876,6 +1096,8 @@ def _selftest(app, win, svc):
 
     # 造一个测试共享，便于截图有内容
     tmp = Path(os.environ.get("TEMP", "/tmp")) / "lanshare_selftest"
+    if tmp.exists():  # 上一轮残留（错误下载/改名文件）会干扰断言，先清空
+        shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(exist_ok=True)
     (tmp / "示例文件.txt").write_text("hello lan share preview", encoding="utf-8")
     (tmp / "说明文档.md").write_text("# 标题\n\n- 列表项一\n- 列表项二\n\n**加粗**与`行内代码`", encoding="utf-8")
@@ -1217,6 +1439,74 @@ def _selftest(app, win, svc):
             print("DL_LOCAL_API save1=%d rm=%s(%d) clear=%s(%d)" % (n1, ok_rm, n2, ok_clear, n3), flush=True)
         except Exception as e:
             print("DL_LOCAL_API_ERR", repr(e), flush=True)
+
+        # ---- Python 下载器：断点续传 + 传输队列（v2.6.18）----
+        try:
+            import urllib.parse as _up2
+            dl_url = "http://127.0.0.1:%d/api/download?share=%s&path=%s" % (
+                port, _sid, _up2.quote("/示例文件.txt"))
+            _q1 = tmp / "队列区"
+            _q1.mkdir(exist_ok=True)
+            jid = win.dl_mgr.start(dl_url, "队列测试.txt", str(_q1))
+            _t0 = time.time()
+            while time.time() - _t0 < 8:
+                _st = next((s for s in win.dl_mgr.snapshot() if s["id"] == jid), None)
+                if _st and _st["state"] in ("done", "error", "canceled"):
+                    break
+                time.sleep(0.2)
+            _d1 = bool(_st and _st["state"] == "done")
+            _f1 = (_q1 / "队列测试.txt").exists()
+            _h1 = any(it.get("name") == "队列测试.txt" for it in win._load_local_downloads())
+            print("PYDL jid=%s state=%s done=%s file=%s hist=%s"
+                  % (jid, _st and _st["state"], _d1, _f1, _h1), flush=True)
+            if not _d1:
+                print("PYDL_FAIL", flush=True)
+            if not _f1:
+                print("PYDL_FILE_FAIL", flush=True)
+            if not _h1:
+                print("PYDL_HIST_FAIL", flush=True)
+            # 断点续传：预写 .part 前 8 字节 → 下载器应跳过已下载部分续传，最终文件完整、.part 消失
+            _q2 = tmp / "队列区2"
+            _q2.mkdir(exist_ok=True)
+            _pf = _q2 / "续传测试.txt.part"
+            _src = (tmp / "示例文件.txt").read_bytes()
+            _pf.write_bytes(_src[:8])
+            jid2 = win.dl_mgr.start(dl_url, "续传测试.txt", str(_q2))
+            _t1 = time.time()
+            while time.time() - _t1 < 8:
+                _st2 = next((s for s in win.dl_mgr.snapshot() if s["id"] == jid2), None)
+                if _st2 and _st2["state"] in ("done", "error", "canceled"):
+                    break
+                time.sleep(0.2)
+            _resume_ok = bool(_st2 and _st2["state"] == "done" and
+                              (_q2 / "续传测试.txt").exists() and
+                              (_q2 / "续传测试.txt").read_bytes() == _src and
+                              not _pf.exists())
+            print("PYDL_RESUME state=%s err=%s done=%d total=%d fsize=%d srcsize=%d resume_ok=%s part_gone=%s"
+                  % (_st2 and _st2["state"], _st2 and _st2["error"], _st2 and _st2["done"],
+                     _st2 and _st2["total"],
+                     (_q2 / "续传测试.txt").stat().st_size if (_q2 / "续传测试.txt").exists() else -1,
+                     len(_src), _resume_ok, not _pf.exists()), flush=True)
+            if not _resume_ok:
+                print("PYDL_RESUME_FAIL", flush=True)
+            # 暂停/继续/取消：状态机单元验证（真实网络太快无法稳定断言，逻辑层验证）
+            _job = {"id": "utctrl", "state": "running",
+                    "_pause": threading.Event(), "_cancel": threading.Event()}
+            with win.dl_mgr._lock:
+                win.dl_mgr.jobs["utctrl"] = _job
+            win.dl_mgr.pause("utctrl")
+            _p1 = _job["state"] == "paused"
+            win.dl_mgr.resume("utctrl")
+            _p2 = _job["state"] == "running"
+            win.dl_mgr.cancel("utctrl")
+            _p3 = _job["_cancel"].is_set()  # cancel 是异步信号（线程检测后置 canceled）
+            with win.dl_mgr._lock:
+                win.dl_mgr.jobs.pop("utctrl", None)
+            print("PYDL_CTRL pause=%s resume=%s cancel=%s" % (_p1, _p2, _p3), flush=True)
+            if not (_p1 and _p2 and _p3):
+                print("PYDL_CTRL_FAIL", flush=True)
+        except Exception as e:
+            print("PYDL_ERR", repr(e), flush=True)
         win.view.page().runJavaScript(
             "document.querySelector('.tab[data-view=dlcenter]') && "
             "document.querySelector('.tab[data-view=dlcenter]').click()")

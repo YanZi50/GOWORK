@@ -358,6 +358,137 @@
     }
   }
 
+  function fmtSpeed(bps) {
+    if (!bps || bps <= 0) return "";
+    if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+    if (bps >= 1024) return (bps / 1024).toFixed(0) + " KB/s";
+    return Math.round(bps) + " B/s";
+  }
+
+  // ---- Python 下载器（断点续传 + 传输队列）：本机文件下载走桌面端下载器 ----
+  function pyDlEnabled() {
+    return !!(window.native && window.native.startDownload &&
+      state.config && state.config.download_dir);
+  }
+
+  function startPyDl(shareId, path, btn, isDir) {
+    const name = path.split("/").filter(Boolean).pop() || "文件";
+    const url = (isDir ? "/api/zip" : "/api/download") + "?share=" +
+      encodeURIComponent(shareId) + "&path=" + encodeURIComponent(path);
+    const task = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    if (btn) {
+      btn.dataset.dlctask = task;
+      btn.dataset.dlRestore = btn.innerHTML;
+      btn.classList.add("is-busy");
+      btn.innerHTML = '<span class="dl-ring" style="--p:0"></span>';
+    }
+    window.native.startDownload(url, name, function (res) {
+      let d = {};
+      try { d = JSON.parse(res || "{}"); } catch (e) { d = {}; }
+      if (!d.ok) {
+        resetDlBtn(btn, task);
+        toast(d.error || "下载启动失败：请先设置下载位置", "error");
+        return;
+      }
+      const jid = d.id;
+      state.dlRunning[jid] = {
+        id: jid, name: d.name || name, dir: d.dir || "", size: 0,
+        received: 0, total: 0, speed: 0, pyState: "running",
+        error: "", ts: Date.now() / 1000,
+      };
+      // 按钮圆圈进度由轮询驱动（关联任务 id）
+      if (btn) { btn.dataset.dlpyid = jid; btn.dataset.dlctask = ""; }
+      updateDlBadge();
+      if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
+    });
+  }
+
+  // 传输队列轮询：Python 下载器状态同步（600ms，轻量 JSON）
+  function resetPyBtn(jid) {
+    const btn = document.querySelector('[data-dlpyid="' + jid + '"]');
+    if (!btn) return;
+    delete btn.dataset.dlpyid;
+    const restore = btn.dataset.dlRestore;
+    delete btn.dataset.dlRestore;
+    btn.classList.remove("is-busy");
+    if (!restore) { btn.remove(); return; }
+    btn.innerHTML = restore;
+  }
+
+  let _pyDlTimer = null;
+  function startPyDlPoll() {
+    if (_pyDlTimer || !window.native || !window.native.getDownloads) return;
+    _pyDlTimer = setInterval(() => {
+      try {
+        window.native.getDownloads(function (json) {
+          let items = [];
+          try { items = (JSON.parse(json || "{}").items) || []; } catch (e) {}
+          applyPyDls(items);
+        });
+      } catch (e) { /* ignore */ }
+    }, 600);
+  }
+
+  function applyPyDls(items) {
+    const seen = {};
+    for (const it of items) {
+      if (!it.id || String(it.id).indexOf("py") !== 0) continue;
+      seen[it.id] = true;
+      const cur = state.dlRunning[it.id];
+      if (it.state === "done") {
+        if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
+        resetPyBtn(it.id);
+        loadLocalDownloads(); // 完成 → 刷新历史
+        continue;
+      }
+      if (it.state === "canceled") {
+        if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
+        resetPyBtn(it.id);
+        continue;
+      }
+      const prevState = cur && cur.pyState;
+      state.dlRunning[it.id] = {
+        id: it.id, name: it.name, dir: it.dir, size: it.total || 0,
+        received: it.done || 0, total: it.total || 0, speed: it.speed || 0,
+        pyState: it.state, error: it.error || "", ts: it.ts || Date.now() / 1000,
+      };
+      // 按钮圆圈进度
+      const btn = document.querySelector('[data-dlpyid="' + it.id + '"]');
+      if (btn) {
+        const ring = btn.querySelector(".dl-ring");
+        if (ring) ring.style.setProperty("--p", it.pct || 0);
+      }
+      // 行内更新（不整表重渲染，防 UI 跳动）；状态变化或新任务才重渲染
+      if (state.view === "dlcenter" && state.dlTab === "running") {
+        const row = document.querySelector('[data-dlr="' + it.id + '"]');
+        if (row && prevState === it.state) {
+          const bar = row.querySelector(".dlc-bar-fill");
+          const pctEl = row.querySelector(".dlc-pct");
+          const spEl = row.querySelector(".dlc-speed");
+          const stEl = row.querySelector(".dlc-state");
+          if (bar && it.total > 0) bar.style.width = Math.min(100, it.pct || 0) + "%";
+          if (pctEl) pctEl.textContent = it.total > 0 ? (it.pct || 0) + "%" : "…";
+          if (spEl) spEl.textContent = it.state === "paused" ? "已暂停" : fmtSpeed(it.speed);
+          if (stEl) stEl.textContent = it.state === "paused" ? "已暂停" : "下载中";
+        } else if (!row || prevState !== it.state) {
+          renderDlCenter();
+        }
+      }
+    }
+    // 清理已消失的 py 任务（取消/删除后角标同步减少）
+    let removed = false;
+    for (const k of Object.keys(state.dlRunning)) {
+      if (String(k).indexOf("py") === 0 && !seen[k]) {
+        delete state.dlRunning[k];
+        removed = true;
+      }
+    }
+    if (removed) {
+      updateDlBadge();
+      if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
+    }
+  }
+
   function loadLocalDownloads() {
     if (!window.native) return;
     window.native.getLocalDownloads(function (json) {
@@ -431,6 +562,20 @@
       }
       const row = ev.target.closest("[data-dlr-open]");
       if (row && row.dataset.dlrOpen) window.native.openDownloadFolder(row.dataset.dlrOpen);
+      // 传输队列操作：暂停 / 继续 / 重试 / 取消
+      const pa = ev.target.closest("[data-dl-pause]");
+      if (pa) { ev.stopPropagation(); window.native.pauseDownload(pa.dataset.dlPause); return; }
+      const rs = ev.target.closest("[data-dl-resume]");
+      if (rs) { ev.stopPropagation(); window.native.resumeDownload(rs.dataset.dlResume); return; }
+      const rt = ev.target.closest("[data-dl-retry]");
+      if (rt) { ev.stopPropagation(); window.native.retryDownload(rt.dataset.dlRetry); return; }
+      const cc = ev.target.closest("[data-dl-cancel]");
+      if (cc) {
+        ev.stopPropagation();
+        if (!confirm("确定取消该下载？未完成的部分将被删除。")) return;
+        window.native.cancelDownload(cc.dataset.dlCancel);
+        return;
+      }
     });
   }
 
@@ -439,13 +584,33 @@
     let html = "";
     for (const it of running) {
       const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
+      const isPy = String(it.id || "").indexOf("py") === 0;
+      const paused = it.pyState === "paused";
+      const errored = it.pyState === "error";
+      let actions = "";
+      if (isPy) {
+        actions = '<div class="dlc-actions">' +
+          (errored
+            ? '<button class="btn btn-primary btn-sm" type="button" data-dl-retry="' + esc(it.id) + '">重试</button>'
+            : (paused
+              ? '<button class="btn btn-primary btn-sm" type="button" data-dl-resume="' + esc(it.id) + '">继续</button>'
+              : '<button class="btn btn-ghost btn-sm" type="button" data-dl-pause="' + esc(it.id) + '">暂停</button>')) +
+          '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>' +
+          "</div>";
+      }
       html += '<div class="dlc-row dlc-running" data-dlr="' + esc(it.id) + '">' +
         '<span class="row-icon">' + I.download + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div>" +
         '<div class="dlc-bar"><div class="dlc-bar-fill" style="width:' + pct + '%"></div></div>' +
-        '<div class="dlc-sub"><span class="dlc-pct">' + pct + "%</span>" +
+        '<div class="dlc-sub">' +
+        '<span class="dlc-pct">' + (it.total > 0 ? pct + "%" : "…") + "</span>" +
+        (isPy && it.speed ? '<span class="dlc-speed">' + fmtSpeed(it.speed) + "</span>" : "") +
+        '<span class="dlc-state"' + (paused ? ' style="color:var(--warn,#e6a23c)"' : "") + ">" +
+        (errored ? "失败" : (paused ? "已暂停" : "下载中")) + "</span>" +
         (it.total > 0 ? '<span>' + fmtSize(it.received) + " / " + fmtSize(it.total) + "</span>" : "") +
-        '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span></div></div></div>";
+        '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span></div>" +
+        (errored && it.error ? '<div class="dlc-err" title="' + esc(it.error) + '">' + esc(it.error) + "</div>" : "") +
+        "</div>" + actions + "</div>";
     }
     return html;
   }
@@ -683,7 +848,8 @@
             btn.addEventListener("click", (ev) => {
               ev.stopPropagation();
               if (btn.dataset.act === "download") {
-                if (dlCopyEnabled()) startDlCopy(s.id, path, btn, false);
+                if (pyDlEnabled()) startPyDl(s.id, path, btn, false);
+                else if (dlCopyEnabled()) startDlCopy(s.id, path, btn, false);
                 else location.href = "/api/download?share=" + encodeURIComponent(s.id) +
                   "&path=" + encodeURIComponent(path);
               } else if (btn.dataset.act === "preview") {
@@ -1745,6 +1911,7 @@
       new QWebChannel(qt.webChannelTransport, (channel) => {
         window.native = channel.objects.bridge;
         Bus.emit("native:ready");
+        startPyDlPoll();   // 传输队列轮询（断点续传/暂停/继续/重试）
         updateBackHome();
       });
     } catch (e) {

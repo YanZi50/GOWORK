@@ -736,6 +736,13 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-bar { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 6px; }
 .dlc-bar-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.25s ease; }
 .dlc-pct { font-variant-numeric: tabular-nums; min-width: 38px; }
+/* 传输队列：操作按钮区 / 速度 / 状态 / 错误提示 */
+.dlc-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.dlc-actions .btn { white-space: nowrap; }
+.dlc-speed { color: var(--accent); font-variant-numeric: tabular-nums; }
+.dlc-state { color: var(--faint); font-variant-numeric: tabular-nums; }
+.dlc-err { font-size: 12px; color: var(--danger, #e5484d); margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px; }
 .dlc-cell { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .dlc-head { font-size: 12px; font-weight: 600; color: var(--muted); background: var(--thead-bg); position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--line); }
 .dlc-gone { color: var(--danger); }

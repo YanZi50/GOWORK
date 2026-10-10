@@ -990,9 +990,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         local = self.app._is_local_ip(self.client_address[0])
         dl_dir = (self.app.cfg.get("download_dir") or "").strip()
-        if local and dl_dir:
+        if local and dl_dir and not qs.get("raw"):
             # 本机下载：接管保存位置——把文件复制到用户设置的下载目录，返回结果页。
             # 外部浏览器对「下载位置」无能为力（浏览器安全边界），本机由 server 直接落盘。
+            # ?raw=1（桌面下载器/断点续传）：强制返回文件流，不做接管。
             saved = self._save_to_dl_dir(full, os.path.basename(full), dl_dir)
             self.app.record_download(share, rel, full, self.client_address[0],
                                      saved_path=saved)
