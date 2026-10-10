@@ -349,8 +349,9 @@ class NativeBridge(QObject):
         self.window = window
 
     @Slot(str, str, result=str)
-    def startDownload(self, url, name):
-        """Python 下载器：断点续传 + 队列。返回 JSON 摘要（含任务 id）。"""
+    @Slot(str, str, int, result=str)
+    def startDownload(self, url, name, size_hint=0):
+        """Python 下载器：断点续传 + 队列。返回 JSON 摘要（含任务 id / done / total）。"""
         dl_dir = (S.app.cfg.get("download_dir") or "").strip()
         if not dl_dir:
             return json.dumps({"ok": False, "error": "未设置下载位置，请在高级设置中先选择"})
@@ -359,9 +360,11 @@ class NativeBridge(QObject):
         if url and not url.lower().startswith(("http://", "https://")):
             # 前端必须传绝对 URL（urllib 不认相对路径）；漏传时按本机服务补全
             url = "http://127.0.0.1:%d%s" % (getattr(S.app, "http_port", 8765), url)
-        jid = self.window.dl_mgr.start(url or "", name or "download", dl_dir)
+        jid = self.window.dl_mgr.start(url or "", name or "download", dl_dir, size_hint or 0)
+        # 返回 done/total：续传时前端可立即显示「已下载 X / 总量」与真实起始进度（不必等轮询）
+        j = self.window.dl_mgr.jobs.get(jid, {})
         return json.dumps({"ok": True, "id": jid, "name": name or "download",
-                           "dir": dl_dir})
+                           "dir": dl_dir, "done": j.get("done", 0), "total": j.get("total", 0)})
 
     @Slot(result=str)
     def getDownloads(self):
@@ -647,7 +650,7 @@ class MainWindow(QMainWindow):
         self.quitting = False
         self.tray_announced = False
 
-        self.setWindowTitle("局域网快传 LAN Share")
+        self.setWindowTitle("局域网快传 LAN Share · v2.6.25")
         self.setWindowIcon(icon)
         self.resize(1100, 720)
         self.setMinimumSize(900, 600)
@@ -815,7 +818,7 @@ class MainWindow(QMainWindow):
                              "size": total or received,
                              "dir": j.get("dir", ""), "path": "", "ts": time.time(),
                              "status": status, "received": received, "total": total,
-                             "error": j.get("error", "")})
+                             "url": j.get("url", ""), "error": j.get("error", "")})
             self._save_local_downloads(items[:200])
             self.view.page().runJavaScript(
                 "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
@@ -1080,7 +1083,7 @@ def run():
     # --- 托盘 ---
     tray = QSystemTrayIcon(icon, app)
     win.tray = tray
-    tray.setToolTip("局域网快传 LAN Share")
+    tray.setToolTip("局域网快传 LAN Share · v2.6.25")
     menu = QMenu()
     act_show = QAction("显示主界面", menu)
     act_show.triggered.connect(lambda: _show_window(win))
@@ -1591,12 +1594,16 @@ def _selftest(app, win, svc):
             if not _filt_ok:
                 print("PYDL_HIST_FILTER_FAIL", flush=True)
             # 取消写「已取消」历史：记录含 status=canceled + 已下载字节（前端显示"已取消 · 已下载 X"）
+            # + url（「继续下载」一键续传入口）
             win._write_py_record({"name": "取消测试.txt", "path": str(tmp / "取消测试.txt"),
-                                  "done": 123, "total": 1000, "dir": "", "error": ""}, "canceled")
+                                  "done": 123, "total": 1000, "dir": "", "error": "",
+                                  "url": "http://127.0.0.1:19500/api/download?share=x&path=/取消测试.txt&raw=1"},
+                                 "canceled")
             _hist3 = win._load_local_downloads()
             _can_rec = next((it for it in _hist3 if it.get("name") == "取消测试.txt"), None)
             _can_ok = bool(_can_rec and _can_rec.get("status") == "canceled"
-                           and _can_rec.get("received") == 123 and _can_rec.get("total") == 1000)
+                           and _can_rec.get("received") == 123 and _can_rec.get("total") == 1000
+                           and _can_rec.get("url"))
             print("PYDL_CANCEL_REC=%s" % _can_ok, flush=True)
             if not _can_ok:
                 print("PYDL_CANCEL_REC_FAIL", flush=True)

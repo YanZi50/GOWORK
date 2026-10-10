@@ -27,6 +27,12 @@
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+  // 统一的百分比计算：除零/非数字一律返回 0（杜绝 NaN%）
+  function safePct(received, total) {
+    if (!total || !Number.isFinite(received) || !Number.isFinite(total)) return 0;
+    return Math.min(100, Math.round(received / total * 100));
+  }
+
   function fmtSize(n) {
     if (n == null || isNaN(n)) return "";
     if (n < 1024) return n + " B";
@@ -251,9 +257,9 @@
         const row = document.querySelector('[data-dlr="' + p.id + '"]');
         const bar = row && row.querySelector(".dlc-bar-fill");
         const pct = row && row.querySelector(".dlc-pct");
-        if (bar && cur.total > 0) {
-          bar.style.width = Math.min(100, Math.round(cur.received / cur.total * 100)) + "%";
-          if (pct) pct.textContent = Math.round(cur.received / cur.total * 100) + "%";
+        if (bar) {
+          bar.style.width = safePct(cur.received, cur.total) + "%";
+          if (pct) pct.textContent = safePct(cur.received, cur.total) + "%";
         }
       }
     } else if (p.type === "done") {
@@ -384,7 +390,7 @@
       state.config && state.config.download_dir);
   }
 
-  function startPyDl(shareId, path, btn, isDir) {
+  function startPyDl(shareId, path, btn, isDir, sizeHint) {
     const name = path.split("/").filter(Boolean).pop() || "文件";
     // Python 下载器(urllib)不认相对 URL，必须拼绝对地址
     const base = (location.origin && location.origin !== "null") ? location.origin :
@@ -398,7 +404,7 @@
       btn.classList.add("is-busy");
       btn.innerHTML = '<span class="dl-ring" style="--p:0"></span>';
     }
-    window.native.startDownload(url, name, function (res) {
+    window.native.startDownload(url, name, Number(sizeHint) || 0, function (res) {
       let d = {};
       try { d = JSON.parse(res || "{}"); } catch (e) { d = {}; }
       if (!d.ok) {
@@ -407,15 +413,50 @@
         return;
       }
       const jid = d.id;
+      const done0 = Number(d.done) || 0, total0 = Number(d.total) || 0;
       state.dlRunning[jid] = {
-        id: jid, name: d.name || name, dir: d.dir || "", size: 0,
-        received: 0, total: 0, speed: 0, pyState: "running",
+        id: jid, name: d.name || name, dir: d.dir || "", size: total0,
+        received: done0, total: total0, speed: 0, pyState: "running",
         error: "", ts: Date.now() / 1000,
       };
-      // 按钮圆圈进度由轮询驱动（关联任务 id）
+      // 按钮圆圈进度由轮询驱动（关联任务 id）；续传时先显示已下载部分的进度
       if (btn) { btn.dataset.dlpyid = jid; btn.dataset.dlctask = ""; }
+      const ring = btn && btn.querySelector(".dl-ring");
+      if (ring && total0 > 0) ring.style.setProperty("--p", safePct(done0, total0));
       updateDlBadge();
       if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
+    });
+  }
+
+  // 已取消记录 → 继续下载：同一 URL 重新启动下载器，.part 在则自动断点续传
+  function resumeFromRecord(url, name, btnEl, sizeHint) {
+    if (!window.native || !window.native.startDownload) {
+      toast("桌面下载器不可用", "error");
+      return;
+    }
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "续传中…";
+    }
+    // 用记录里的总量做 sizeHint：续传立即显示真实进度（不用等轮询）
+    window.native.startDownload(url, name, Number(sizeHint) || 0, function (res) {
+      let d = {};
+      try { d = JSON.parse(res || "{}"); } catch (e) { d = {}; }
+      if (!d.ok) {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = "继续"; }
+        toast(d.error || "续传失败：请先设置下载位置", "error");
+        return;
+      }
+      const jid = d.id;
+      const done0 = Number(d.done) || 0, total0 = Number(d.total) || 0;
+      state.dlRunning[jid] = {
+        id: jid, name: d.name || name, dir: d.dir || "", size: total0,
+        received: done0, total: total0, speed: 0, pyState: "running",
+        error: "", ts: Date.now() / 1000,
+      };
+      updateDlBadge();
+      if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
+      else toast("已从中断处继续下载", "ok");
     });
   }
 
@@ -469,8 +510,8 @@
     const spEl = row.querySelector(".dlc-speed");
     const stEl = row.querySelector(".dlc-state");
     const actions = row.querySelector(".dlc-actions");
-    const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
-    if (bar && it.total > 0) bar.style.width = Math.min(100, pct) + "%";
+    const pct = safePct(it.received, it.total);
+    if (bar) bar.style.width = pct + "%";
     if (pctEl) pctEl.textContent = it.total > 0 ? pct + "%" : "…";
     const paused = it.state === "paused";
     const errored = it.state === "error";
@@ -630,6 +671,14 @@
       }
       const row = ev.target.closest("[data-dlr-open]");
       if (row && row.dataset.dlrOpen) window.native.openDownloadFolder(row.dataset.dlrOpen);
+      // 已取消记录里的「继续」：从中断处续传（已下载部分保留复用）
+      const rr = ev.target.closest("[data-dl-resume-rec]");
+      if (rr) {
+        ev.stopPropagation();
+        resumeFromRecord(rr.dataset.dlResumeRec, rr.dataset.dlResumeName || "", rr,
+          Number(rr.dataset.dlResumeTotal) || 0);
+        return;
+      }
       // 传输队列操作：暂停 / 继续 / 重试 / 取消
       const pa = ev.target.closest("[data-dl-pause]");
       if (pa) { ev.stopPropagation(); window.native.pauseDownload(pa.dataset.dlPause); return; }
@@ -701,7 +750,7 @@
     if (!running.length) return '<div class="empty">没有正在下载的任务</div>';
     let html = "";
     for (const it of running) {
-      const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
+      const pct = safePct(it.received, it.total);
       const isPy = String(it.id || "").indexOf("py") === 0;
       const paused = it.pyState === "paused";
       const errored = it.pyState === "error";
@@ -742,7 +791,12 @@
           '<span class="dlc-cell">' + sizeTxt + "</span>" +
           '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
           '<span class="dlc-cell dlc-cell-muted">—</span>' +
-          '<button class="btn btn-ghost btn-sm btn-dlr" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
+          '<span class="dlc-row-actions">' +
+          (st === "canceled" && it.url
+            ? '<button class="btn btn-primary btn-sm" type="button" data-dl-resume-rec="' + esc(it.url) + '" data-dl-resume-name="' + esc(it.name) + '" data-dl-resume-total="' + (it.total || 0) + '" title="从中断处继续下载（已下载的部分不用重下）">继续</button>'
+            : "") +
+          '<button class="btn btn-ghost btn-sm btn-dlr" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button>" +
+          "</span></div>";
         continue;
       }
       // dir 有值 = 可跳转（软件窗口内下载：真实路径；外部浏览器下载：定位到的浏览器下载目录/文件）
@@ -951,7 +1005,7 @@
               : "") +
             "</div>";
         }
-        html += '<div class="file-row' + (isDir ? " is-dir" : "") + '" data-dir="' + (isDir ? "1" : "0") + '" data-path="' + esc(filePath) + '">' +
+        html += '<div class="file-row' + (isDir ? " is-dir" : "") + '" data-dir="' + (isDir ? "1" : "0") + '" data-path="' + esc(filePath) + '" data-size="' + (e.size || 0) + '">' +
           '<span class="row-icon">' + icon + "</span>" +
           '<div class="row-main"><div class="row-name" title="' + esc(e.name) + '">' + esc(e.name) + "</div>" +
           '<div class="row-sub">' + sub + "</div></div>" + actions + "</div>";
@@ -974,7 +1028,7 @@
             btn.addEventListener("click", (ev) => {
               ev.stopPropagation();
               if (btn.dataset.act === "download") {
-                if (pyDlEnabled()) startPyDl(s.id, path, btn, false);
+                if (pyDlEnabled()) startPyDl(s.id, path, btn, false, Number(row.dataset.size) || 0);
                 else if (dlCopyEnabled()) startDlCopy(s.id, path, btn, false);
                 else location.href = "/api/download?share=" + encodeURIComponent(s.id) +
                   "&path=" + encodeURIComponent(path);

@@ -723,7 +723,10 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-tabs .btn { margin-left: auto; }
 .dlc-body { max-height: 56vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 /* 下载中心列统一 grid 模板：表头与数据行共用同一列宽，防错位（UI 稳定） */
-.dlc-row { display: grid; grid-template-columns: 30px minmax(120px, 1fr) 84px 150px minmax(100px, 1fr) 84px; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.dlc-row { display: grid; grid-template-columns: 30px minmax(120px, 1fr) 84px 150px minmax(100px, 1fr) minmax(94px, auto); align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+/* 已取消/失败记录操作列：继续 + 删除 两个按钮并排 */
+.dlc-row-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.dlc-row-actions .btn { white-space: nowrap; }
 .dlc-row:last-child { border-bottom: 0; }
 .dlc-row .row-icon { color: var(--faint); }
 .dlc-row.dlc-done:hover { background: var(--accent-soft); }
