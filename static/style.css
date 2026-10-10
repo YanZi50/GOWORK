@@ -911,6 +911,10 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 }
 .back-home[hidden] { display: none; }
 
+/* 置顶卡片长按拖动排序 */
+.ac-card.pin-drag-src { opacity: .45; outline: 2px dashed var(--accent, #3ea6ff); outline-offset: -2px; }
+.ac-card.pin-drag-over { box-shadow: 0 0 0 2px var(--accent, #3ea6ff) inset; border-radius: 12px; }
+
 /* ---------- 响应式 ---------- */
 
 @media (max-width: 640px) {

@@ -493,10 +493,20 @@
     $("#peerCount").textContent = state.peers.length ? String(state.peers.length) : "";
   }
 
+  // 共享排序：置顶在前，置顶组内按 pin_at 倒序（后置顶/拖动后排前面的在前）
+  function sortShares(arr) {
+    return arr.slice().sort((a, b) => {
+      const pa = a.pin ? 1 : 0, pb = b.pin ? 1 : 0;
+      if (pa !== pb) return pb - pa;
+      if (pa) return ((b.pin_at || 0) - (a.pin_at || 0)) || 0;
+      return 0;
+    });
+  }
+
   function renderShares() {
     const cfg = state.config;
     // 置顶的共享排在最前
-    const shares = (cfg.shares || []).slice().sort((a, b) => ((b.pin ? 1 : 0) - (a.pin ? 1 : 0)));
+    const shares = sortShares(cfg.shares || []);
     let html = '<div class="section-head"><div><h2 class="section-title">共享文件夹</h2>' +
       '<div class="section-sub">在本机「管理」页添加共享；局域网设备已自动发现本机</div></div></div>';
     if (!shares.length) {
@@ -1147,8 +1157,8 @@
       ? all.filter((s) => (s.name || "").toLowerCase().includes(kw) ||
           (s.path || "").toLowerCase().includes(kw))
       : all;
-    // 置顶的共享排在最前
-    shares = shares.slice().sort((a, b) => ((b.pin ? 1 : 0) - (a.pin ? 1 : 0)));
+    // 置顶的共享排在最前（置顶组内按 pin_at 倒序）
+    shares = sortShares(shares);
     const LIMIT = 6;
     const showAll = !!state.acShowAll;
     const shown = showAll ? shares : shares.slice(0, LIMIT);
@@ -1160,8 +1170,9 @@
           ? '<span class="badge badge-password">' + I.lock + '密码</span>'
           : '<span class="badge badge-private">仅自己</span>';
       const writeBadge = s.writable ? '<span class="badge badge-write">可上传</span>' : "";
-      html += '<div class="ac-card" data-id="' + esc(s.id) + '">' +
-        '<div class="ac-head" data-toggle role="button" tabindex="0">' +
+      html += '<div class="ac-card" data-id="' + esc(s.id) + '"' + (s.pin ? ' data-pinned="1"' : "") + '>' +
+        '<div class="ac-head" data-toggle role="button" tabindex="0"' +
+        (s.pin ? ' data-pin-card title="长按拖动可调整置顶顺序"' : "") + '>' +
         '<span class="share-icon">' + I.folder + "</span>" +
         '<div class="ac-main"><div class="ac-name">' + esc(s.name) + " " + badge + writeBadge + "</div>" +
         '<div class="ac-sub">' + esc(s.path || "") + "</div></div>" +
@@ -1216,8 +1227,74 @@
       renderAdminList();
     });
 
-    // 展开/收起 + 删除 + 保存（事件委托）
-    listEl.addEventListener("click", async (ev) => {
+    // 展开/收起 + 删除 + 保存 + 置顶 + 长按拖动排序（事件委托，只绑一次防累积）
+    if (!listEl.dataset.bound) {
+      listEl.dataset.bound = "1";
+      // ---- 长按拖动：仅置顶卡片（data-pin-card），长按 400ms 激活，与点击展开区分 ----
+      let pinPressTimer = null, pinDragId = null, pinPressStart = null;
+      const pinClear = () => {
+        clearTimeout(pinPressTimer);
+        pinPressTimer = null; pinPressStart = null;
+        const cs = listEl.querySelectorAll(".ac-card");
+        cs.forEach((c) => { c.classList.remove("pin-drag-src", "pin-drag-over"); c.removeAttribute("draggable"); });
+      };
+      listEl.addEventListener("mousedown", (ev) => {
+        const head = ev.target.closest("[data-pin-card]");
+        if (!head || ev.button !== 0) return;
+        const card = head.closest(".ac-card");
+        pinPressStart = { x: ev.clientX, y: ev.clientY };
+        pinPressTimer = setTimeout(() => {
+          pinPressTimer = null;
+          pinDragId = card.dataset.id;
+          card.classList.add("pin-drag-src");
+          card.setAttribute("draggable", "true");
+        }, 400);
+      });
+      listEl.addEventListener("mousemove", (ev) => {
+        if (!pinPressTimer || !pinPressStart) return;
+        const dx = Math.abs(ev.clientX - pinPressStart.x) + Math.abs(ev.clientY - pinPressStart.y);
+        if (dx > 10) { clearTimeout(pinPressTimer); pinPressTimer = null; }
+      });
+      listEl.addEventListener("mouseup", () => pinClear());
+      listEl.addEventListener("dragstart", (ev) => {
+        if (!pinDragId) return;
+        ev.dataTransfer.effectAllowed = "move";
+        try { ev.dataTransfer.setData("text/plain", pinDragId); } catch (e) { /* ignore */ }
+      });
+      listEl.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        const card = ev.target.closest(".ac-card");
+        if (card && pinDragId) card.classList.add("pin-drag-over");
+      });
+      listEl.addEventListener("dragleave", (ev) => {
+        const card = ev.target.closest(".ac-card");
+        if (card) card.classList.remove("pin-drag-over");
+      });
+      listEl.addEventListener("dragend", () => pinClear());
+      listEl.addEventListener("drop", async (ev) => {
+        ev.preventDefault();
+        const target = ev.target.closest(".ac-card");
+        const srcId = pinDragId;
+        pinClear();
+        if (!target || !srcId || target.dataset.id === srcId) return;
+        const ids = Array.from(listEl.querySelectorAll('.ac-card[data-pinned="1"]'))
+          .map((c) => c.dataset.id);
+        const from = ids.indexOf(srcId), to = ids.indexOf(target.dataset.id);
+        if (from < 0 || to < 0) return;
+        ids.splice(from, 1);
+        ids.splice(to, 0, srcId);
+        try {
+          await api("/api/shares/order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ order: ids }),
+          });
+          toast("置顶顺序已保存", "ok");
+          refreshConfig();
+        } catch (e) { toast(e.message, "error"); }
+      });
+      // ---- 常规操作（点击） ----
+      listEl.addEventListener("click", async (ev) => {
       const card = ev.target.closest(".ac-card");
       if (!card) return;
       const body = card.querySelector(".ac-body");
@@ -1301,7 +1378,8 @@
           renderAdmin();
         } catch (e) { toast(e.message, "error"); }
       }
-    });
+      });
+    }
   }
 
   /* ---------------- 上传 ---------------- */

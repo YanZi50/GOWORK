@@ -111,6 +111,29 @@ def main():
         _, cfg3 = api("/api/config")
         p = next((x for x in cfg3["shares"] if x.get("name") == "置顶测试"), None)
         check("pin_readback", p is not None and p.get("pin") is True, json.dumps(p or {}))
+        check("pin_at_written", p is not None and isinstance(p.get("pin_at"), (int, float)),
+              json.dumps(p or {}))
+        # 第二个置顶：pin_at 应晚于第一个 → 前端按 pin_at 倒序排前面
+        st, r = api("/api/shares", json.dumps({
+            "name": "置顶测试2", "path": str(share_dir), "perm": "public", "writable": False, "pin": True,
+        }).encode("utf-8"))
+        check("pin2_save_200", st == 200, str(r))
+        _, cfg4 = api("/api/config")
+        p2 = next((x for x in cfg4["shares"] if x.get("name") == "置顶测试2"), None)
+        check("pin2_newer", p2 is not None and p.get("pin_at") is not None and
+              p2["pin_at"] > p["pin_at"], "a=%s b=%s" % (p.get("pin_at"), p2 and p2.get("pin_at")))
+        # 拖动排序接口：把 p 放到 p2 前面（视觉顺序 p, p2）→ 重写 pin_at 使 p 更新
+        st, r = api("/api/shares/order", json.dumps({
+            "order": [p["id"], p2["id"]],
+        }).encode("utf-8"))
+        check("order_200", st == 200, str(r))
+        _, cfg5 = api("/api/config")
+        pa = next(x for x in cfg5["shares"] if x["id"] == p["id"])
+        pb = next(x for x in cfg5["shares"] if x["id"] == p2["id"])
+        check("order_pin_at", pa["pin_at"] > pb["pin_at"],
+              "pa=%s pb=%s" % (pa.get("pin_at"), pb.get("pin_at")))
+        if p2:
+            api("/api/shares/" + p2["id"])
         if p:
             api("/api/shares/" + p["id"])
         ips = _srv.get_local_ips()

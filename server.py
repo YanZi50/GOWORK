@@ -776,7 +776,8 @@ class Handler(BaseHTTPRequestHandler):
             if s["perm"] == "private" and not local:
                 continue
             info = {"id": s["id"], "name": s["name"], "perm": s["perm"],
-                    "writable": bool(s.get("writable")), "pin": bool(s.get("pin"))}
+                    "writable": bool(s.get("writable")), "pin": bool(s.get("pin")),
+                    "pin_at": s.get("pin_at")}
             if s["perm"] == "password":
                 info["locked"] = True
             if local:
@@ -1295,6 +1296,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "密码保护至少需要 4 位密码"})
             return
         share_id = str(body.get("id") or "")
+        now_ms = int(time.time() * 1000)
+        pin = bool(body.get("pin"))
+        pin_at = body.get("pin_at")  # 拖动排序时由前端显式传入；否则置顶时取当前时间
+        if pin_at is None and pin:
+            pin_at = now_ms
         with self.app.lock:
             if share_id:
                 share = self.app.get_share(share_id)
@@ -1305,7 +1311,9 @@ class Handler(BaseHTTPRequestHandler):
                 share["path"] = os.path.abspath(path)
                 share["perm"] = perm
                 share["writable"] = writable
-                share["pin"] = bool(body.get("pin"))
+                share["pin"] = pin
+                if pin_at is not None:
+                    share["pin_at"] = pin_at
                 if perm == "password":
                     share["pwd_salt"], share["pwd_hash"] = hash_password(password)
                     share["pwd"] = password   # 明文仅供本机管理页回显
@@ -1320,8 +1328,10 @@ class Handler(BaseHTTPRequestHandler):
                     "path": os.path.abspath(path),
                     "perm": perm,
                     "writable": writable,
-                    "pin": bool(body.get("pin")),
+                    "pin": pin,
                 }
+                if pin_at is not None:
+                    share["pin_at"] = pin_at
                 if perm == "password":
                     share["pwd_salt"], share["pwd_hash"] = hash_password(password)
                     share["pwd"] = password   # 明文仅供本机管理页回显
@@ -1330,6 +1340,30 @@ class Handler(BaseHTTPRequestHandler):
         self._log("共享已更新：%s -> %s (%s)" % (name, path, perm))
         self._json(200, {"ok": True, "share": {"id": share["id"], "name": share["name"],
                                                "perm": share["perm"]}})
+
+    def _api_shares_order(self, body):
+        """长按拖动置顶排序：body={"order": [id...]}（仅置顶 id，按视觉顺序从上到下）。
+        将顺序重写为递减的 pin_at，前端按 pin_at 倒序渲染即可复现该顺序。"""
+        if not self._is_local():
+            self._json(403, {"error": "仅本机可管理共享"})
+            return
+        order = (body or {}).get("order") or []
+        if not isinstance(order, list) or not order:
+            self._json(400, {"error": "order 必须是非空 id 数组"})
+            return
+        now_ms = int(time.time() * 1000)
+        with self.app.lock:
+            idx = {}
+            for pos, sid in enumerate(order):
+                idx[str(sid)] = now_ms - pos  # 严格递减，保证唯一且倒序稳定
+            changed = False
+            for share in self.app.cfg["shares"]:
+                if share.get("pin") and share["id"] in idx:
+                    share["pin_at"] = idx[share["id"]]
+                    changed = True
+        if changed:
+            self.app.save()
+        self._json(200, {"ok": True})
 
     def _api_shares_delete(self, share_id):
         if not self._is_local():
@@ -1450,6 +1484,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/api/shares":
                 return self._api_shares_add(body)
+            if p == "/api/shares/order":
+                return self._api_shares_order(body)
             if p == "/api/login":
                 return self._api_login(body)
             if p == "/api/logout":
