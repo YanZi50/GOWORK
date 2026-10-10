@@ -279,6 +279,11 @@
   }
 
   function startDlCopy(shareId, path, btn, isDir) {
+    // 防重复点击：按钮已挂任务时忽略
+    if (btn && (btn.dataset.dlpyid || btn.dataset.dlctask)) {
+      toast("该文件已有下载任务（可到下载中心继续）", "ok");
+      return;
+    }
     const name = path.split("/").filter(Boolean).pop() || "文件";
     const task = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     // 进入下载中列表 + 顶栏角标
@@ -391,6 +396,11 @@
   }
 
   function startPyDl(shareId, path, btn, isDir, sizeHint) {
+    // 防重复点击：按钮已挂任务（下载中/暂停/复制中）时忽略，避免第二个任务写同一文件
+    if (btn && (btn.dataset.dlpyid || btn.dataset.dlctask)) {
+      toast("该文件已有下载任务（可到下载中心继续）", "ok");
+      return;
+    }
     const name = path.split("/").filter(Boolean).pop() || "文件";
     // Python 下载器(urllib)不认相对 URL，必须拼绝对地址
     const base = (location.origin && location.origin !== "null") ? location.origin :
@@ -524,7 +534,8 @@
     if (actions && prevState !== it.state) {
       const ctl = actions.querySelector("[data-dl-pause],[data-dl-resume],[data-dl-retry]");
       if (ctl) {
-        // 原地修改按钮（不重建节点）：暂停↔继续↔重试
+        // 原地修改按钮（不重建节点、不改样式/宽度）：暂停↔继续↔重试
+        // className 保持不变（统一 ghost + 固定 min-width），避免按钮变宽导致行布局抽动
         ctl.textContent = errored ? "重试" : (paused ? "继续" : "暂停");
         delete ctl.dataset.dlPause;
         delete ctl.dataset.dlResume;
@@ -532,7 +543,6 @@
         if (errored) ctl.dataset.dlRetry = it.id;
         else if (paused) ctl.dataset.dlResume = it.id;
         else ctl.dataset.dlPause = it.id;
-        ctl.className = "btn " + (errored || paused ? "btn-primary" : "btn-ghost") + " btn-sm";
       }
     }
   }
@@ -562,11 +572,12 @@
         received: it.done || 0, total: it.total || 0, speed: it.speed || 0,
         pyState: it.state, error: it.error || "", ts: it.ts || Date.now() / 1000,
       };
-      // 按钮圆圈进度
+      // 按钮圆圈进度（暂停时保持加载圈不动，悬停提示防止误点重复下载）
       const btn = document.querySelector('[data-dlpyid="' + it.id + '"]');
       if (btn) {
         const ring = btn.querySelector(".dl-ring");
         if (ring) ring.style.setProperty("--p", it.pct || 0);
+        btn.title = it.state === "paused" ? "已暂停 · 点击下载中心继续" : "正在下载";
       }
       // 行内更新：同一行始终 patch（不整表重渲染）；只有行不存在（新任务）才整表渲染
       if (state.view === "dlcenter" && state.dlTab === "running") {

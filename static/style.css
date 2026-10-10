@@ -741,7 +741,7 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .dlc-pct { font-variant-numeric: tabular-nums; min-width: 38px; }
 /* 传输队列：操作按钮区 / 速度 / 状态 / 错误提示 */
 .dlc-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
-.dlc-actions .btn { white-space: nowrap; }
+.dlc-actions .btn { white-space: nowrap; min-width: 68px; text-align: center; }
 .dlc-speed { color: var(--accent); font-variant-numeric: tabular-nums; }
 .dlc-state { color: var(--faint); font-variant-numeric: tabular-nums; }
 .dlc-err { font-size: 12px; color: var(--danger, #e5484d); margin-top: 4px;
