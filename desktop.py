@@ -271,6 +271,8 @@ class DownloadManager:
         if j and j["state"] == "paused":
             j["state"] = "running"
             j["_pause"].clear()
+            # 重置速度窗口：避免恢复后第一秒把暂停时长算进速度（假速度）
+            j["_win_start"], j["_win_done"] = time.time(), j.get("done", 0)
 
     def retry(self, jid):
         """重试：从 .part 断点继续（error/canceled/paused 均可重试）。"""
@@ -1569,7 +1571,8 @@ def _selftest(app, win, svc):
             if not _resume_ok:
                 print("PYDL_RESUME_FAIL", flush=True)
             # 暂停/继续/取消：状态机单元验证（真实网络太快无法稳定断言，逻辑层验证）
-            _job = {"id": "utctrl", "state": "running",
+            _job = {"id": "utctrl", "state": "running", "done": 0, "speed": 0.0,
+                    "_win_start": 0.0, "_win_done": 0,
                     "_pause": threading.Event(), "_cancel": threading.Event()}
             with win.dl_mgr._lock:
                 win.dl_mgr.jobs["utctrl"] = _job
@@ -1584,6 +1587,13 @@ def _selftest(app, win, svc):
             print("PYDL_CTRL pause=%s resume=%s cancel=%s" % (_p1, _p2, _p3), flush=True)
             if not (_p1 and _p2 and _p3):
                 print("PYDL_CTRL_FAIL", flush=True)
+            # 进度百分比数学断言：除零=0、正常取整、超 100 封顶（防 NaN% 复发）
+            _pct_ok = (_dl_pct(0, 0) == 0 and _dl_pct(0, 100) == 0
+                       and _dl_pct(50, 100) == 50 and _dl_pct(150, 100) == 100
+                       and _dl_pct(1, 3) == 33 and _dl_pct(3, 3) == 100)
+            print("PYDL_PCT=%s" % _pct_ok, flush=True)
+            if not _pct_ok:
+                print("PYDL_PCT_FAIL", flush=True)
             # 历史过滤：取消/中断的 .part 残留不得进入已完成/历史（读写两侧）
             win._save_local_downloads([
                 {"key": "k1", "name": "残片.txt.part", "size": 1, "dir": "d", "path": "p", "ts": 1},
