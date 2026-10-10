@@ -117,22 +117,60 @@ def hash_password(password, salt=None):
 
 
 def get_local_ips():
+    """枚举本机所有可用网卡的 IPv4（排除回环与虚拟/VPN 网卡），多网卡场景全部返回。
+
+    1) Windows 优先解析 ipconfig：能拿到全部物理网卡 IP，不依赖外网可达性；
+    2) 主机名解析兜底；3) UDP 默认路由探测兜底（8.8.8.8 不可达时静默跳过）。
+    """
     ips = set()
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        import re
+        import subprocess
+        raw = subprocess.run(["ipconfig"], capture_output=True, timeout=10).stdout or b""
+        # 中文 Windows 的 ipconfig 输出为 GBK/cp936：显式解码，禁止 text=True 默认 UTF-8
         try:
-            s.connect(("8.8.8.8", 80))
-            ips.add(s.getsockname()[0])
-        finally:
-            s.close()
+            out = raw.decode("gbk", errors="replace")
+        except Exception:
+            out = raw.decode("utf-8", errors="replace")
+        section = ""
+        for line in out.splitlines():
+            if not line.strip() or not line[0].isspace():
+                section = line.strip()
+                continue
+            m = re.search(r"IPv4[^0-9]*(\d{1,3}(?:\.\d{1,3}){3})", line, re.I)
+            if not m:
+                continue
+            ip = m.group(1)
+            if ip.startswith("127."):
+                continue
+            low = (section + " " + line).lower()
+            if any(k in low for k in (
+                    "loopback", "virtual", "vmware", "vbox", "docker", "wsl",
+                    "hyper", "vpn", "tap", "tun", "tunnel", "bluetooth", "蓝牙",
+                    "teredo", "isatap", "6to4", "以太网适配器 虚拟机")):
+                continue
+            ips.add(ip)
     except Exception:
         pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ips.add(info[4][0])
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
     except Exception:
         pass
-    return sorted(ips - {"127.0.0.1"})
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+        finally:
+            s.close()
+    except Exception:
+        pass
+    return sorted(ips)
 
 
 # --------------------------------------------------------------------------- #
@@ -725,7 +763,7 @@ class Handler(BaseHTTPRequestHandler):
             if s["perm"] == "private" and not local:
                 continue
             info = {"id": s["id"], "name": s["name"], "perm": s["perm"],
-                    "writable": bool(s.get("writable"))}
+                    "writable": bool(s.get("writable")), "pin": bool(s.get("pin"))}
             if s["perm"] == "password":
                 info["locked"] = True
             if local:
@@ -1254,6 +1292,7 @@ class Handler(BaseHTTPRequestHandler):
                 share["path"] = os.path.abspath(path)
                 share["perm"] = perm
                 share["writable"] = writable
+                share["pin"] = bool(body.get("pin"))
                 if perm == "password":
                     share["pwd_salt"], share["pwd_hash"] = hash_password(password)
                     share["pwd"] = password   # 明文仅供本机管理页回显
@@ -1268,6 +1307,7 @@ class Handler(BaseHTTPRequestHandler):
                     "path": os.path.abspath(path),
                     "perm": perm,
                     "writable": writable,
+                    "pin": bool(body.get("pin")),
                 }
                 if perm == "password":
                     share["pwd_salt"], share["pwd_hash"] = hash_password(password)

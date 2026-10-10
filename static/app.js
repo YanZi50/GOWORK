@@ -495,7 +495,8 @@
 
   function renderShares() {
     const cfg = state.config;
-    const shares = cfg.shares || [];
+    // 置顶的共享排在最前
+    const shares = (cfg.shares || []).slice().sort((a, b) => ((b.pin ? 1 : 0) - (a.pin ? 1 : 0)));
     let html = '<div class="section-head"><div><h2 class="section-title">共享文件夹</h2>' +
       '<div class="section-sub">在本机「管理」页添加共享；局域网设备已自动发现本机</div></div></div>';
     if (!shares.length) {
@@ -1142,10 +1143,12 @@
     }
     // 搜索过滤（名称/路径）+ 数量约束：默认只显示前 6 个，可展开全部
     const kw = (state.shareSearch || "").trim().toLowerCase();
-    const shares = kw
+    let shares = kw
       ? all.filter((s) => (s.name || "").toLowerCase().includes(kw) ||
           (s.path || "").toLowerCase().includes(kw))
       : all;
+    // 置顶的共享排在最前
+    shares = shares.slice().sort((a, b) => ((b.pin ? 1 : 0) - (a.pin ? 1 : 0)));
     const LIMIT = 6;
     const showAll = !!state.acShowAll;
     const shown = showAll ? shares : shares.slice(0, LIMIT);
@@ -1162,6 +1165,8 @@
         '<span class="share-icon">' + I.folder + "</span>" +
         '<div class="ac-main"><div class="ac-name">' + esc(s.name) + " " + badge + writeBadge + "</div>" +
         '<div class="ac-sub">' + esc(s.path || "") + "</div></div>" +
+        '<button class="btn btn-ghost btn-sm" type="button" data-ac-pin title="置顶后排在共享列表最前">' +
+        (s.pin ? "取消置顶" : "置顶") + "</button>" +
         '<button class="btn btn-ghost btn-sm" type="button" data-ac-toggle>' + I.copy + '编辑</button>' +
         '<button class="btn btn-danger btn-sm" type="button" data-ac-del>删除</button>' +
         "</div>" +
@@ -1224,6 +1229,25 @@
           toast("已删除", "ok");
           refreshConfig();
           renderAdmin();
+        } catch (e) { toast(e.message, "error"); }
+        return;
+      }
+      if (ev.target.closest("[data-ac-pin]")) {
+        const s = (state.config.shares || []).find((x) => x.id === card.dataset.id);
+        if (!s) return;
+        const pin = !s.pin;
+        try {
+          await api("/api/shares", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: s.id, name: s.name, path: s.path,
+              perm: s.perm, password: s.perm === "password" ? (s.pwd || "") : "",
+              writable: !!s.writable, pin: pin,
+            }),
+          });
+          toast(pin ? "已置顶，排在共享列表最前" : "已取消置顶", "ok");
+          refreshConfig();
         } catch (e) { toast(e.message, "error"); }
         return;
       }

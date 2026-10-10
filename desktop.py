@@ -764,6 +764,14 @@ def run():
                 _push_dl({"type": "done", "id": item_id, "name": fname2,
                           "dir": ddir, "path": full, "size": size,
                           "ts": time.time()})
+                # 下载完成托盘通知（小白友好：不盯下载中心也知道结果）
+                try:
+                    win.tray.showMessage(
+                        "下载完成",
+                        "%s\n已保存到：%s" % (fname2, ddir),
+                        QSystemTrayIcon.Information, 4000)
+                except Exception:
+                    pass
 
             try:
                 item.downloadProgress.connect(_on_progress)
@@ -951,6 +959,7 @@ def _selftest(app, win, svc):
             " ctxMenu: !!document.querySelector('.ctx-menu')," +
             " advBodyOpen: (function(){ var b=document.querySelector('#advCard .ac-body'); return b?!b.hidden:false; })()," +
             " acCards: document.querySelectorAll('#adminList .ac-card').length," +
+            " acPin: document.querySelectorAll('#adminList [data-ac-pin]').length," +
             " acOpen: (function(){ var b=document.querySelector('#adminList .ac-body'); return b ? !b.hidden : false; })()," +
             " acPwdVal: (function(){ var v=''; document.querySelectorAll('#adminList input[data-f=pwd]').forEach(function(i){ if(i.value) v=i.value; }); return v; })()," +
             " themeBtn: !!document.getElementById('themeBtn')," +

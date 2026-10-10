@@ -24,6 +24,8 @@ APP_DIR = Path(__file__).resolve().parent
 PORT = 18765
 BASE = "http://127.0.0.1:%d" % PORT
 
+import server as _srv  # 仅取 get_local_ips 等纯函数
+
 PASS = []
 
 
@@ -100,6 +102,20 @@ def main():
         check("theme_readback_light", cfg2.get("theme") == "light", "theme=%r" % cfg2.get("theme"))
         st, _ = api("/api/config", data=b'{"theme":"dark"}', ctype="application/json")
         check("theme_restore_200", st == 200, "st=%d" % st)
+
+        # 2b) 共享置顶：pin 字段透传 + 回读；多网卡 IP 枚举非空
+        st, r = api("/api/shares", json.dumps({
+            "name": "置顶测试", "path": str(share_dir), "perm": "public", "writable": False, "pin": True,
+        }).encode("utf-8"))
+        check("pin_save_200", st == 200, str(r))
+        _, cfg3 = api("/api/config")
+        p = next((x for x in cfg3["shares"] if x.get("name") == "置顶测试"), None)
+        check("pin_readback", p is not None and p.get("pin") is True, json.dumps(p or {}))
+        if p:
+            api("/api/shares/" + p["id"])
+        ips = _srv.get_local_ips()
+        check("local_ips_nonempty", len(ips) >= 1, "ips=%r" % ips)
+        check("local_ips_no_loopback", all(not i.startswith("127.") for i in ips), "ips=%r" % ips)
 
         # 3) 列表可见
         st, r = api("/api/list?share=%s&path=/" % share_id)

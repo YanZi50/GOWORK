@@ -16,6 +16,12 @@
 
 ## 服务内核（server.py）
 
+### B-19 ipconfig 解析在中文 Windows 上按 UTF-8 解码崩溃（2026-10-10，v2.6.15 修正）
+- **现象**：`get_local_ips()` 的 ipconfig 解析每次调用刷 `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd2`（源码跑启动即出现，打包版吞错但日志噪音大）。
+- **根因**：`subprocess.run(..., text=True)` 默认用 locale/UTF-8 解码，而中文 Windows 的 `ipconfig` 输出是 **GBK/cp936** → 解码抛错；虽有兜底逻辑但错误已产生。
+- **解决**：去掉 `text=True`，改取 bytes 后**显式 `gbk` 解码（errors="replace"）**，再兜底 utf-8。
+- **防复现**：凡解析 Windows 命令行工具输出（ipconfig/netstat 等），一律 bytes + 显式 GBK 解码，禁止 text=True；冒烟断言 `local_ips_nonempty` 覆盖调用路径。
+
 ### B-17 接管复制"先建空文件再写"导致测试轮询误判（2026-10-09，v2.6 修正）
 - **现象**：dlcopy 冒烟断言偶发失败——轮询到文件"存在"即断言大小，撞上 size=0 的空文件阶段。
 - **根因**：复制逻辑先 `open(target,"wb")` 创建空文件再写入，测试轮询只查 `os.path.isfile`。
