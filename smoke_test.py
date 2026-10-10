@@ -221,6 +221,27 @@ def main():
         check("限速下上传完成", st == 200, str(r)[:200])
         check("限速耗时合理(>=2.8s)", elapsed >= 2.8, "实际 %.2fs" % elapsed)
 
+        # 7.8) dlcopy 取消：复制中的任务取消后目标被删除（限速下 big.bin 复制慢，便于取消）
+        try:
+            st, r = api("/api/config", json.dumps({"download_dir": dl_dir}).encode("utf-8"))
+            check("dlcopy 取消-设下载目录", st == 200, str(r)[:200])
+            st, r = api("/api/dlcopy?share=%s&path=/big.bin&task=t_smoke_cancel" % share_id)
+            check("dlcopy 取消-启动 202", st == 202, str(r)[:200])
+            time.sleep(0.6)  # 等复制线程开始写目标
+            st, r = api("/api/dlcopy/cancel?task=t_smoke_cancel")
+            check("dlcopy 取消-接口 200", st == 200 and r.get("ok"), str(r)[:200])
+            target = os.path.join(dl_dir, "big.bin")
+            t0 = time.time()
+            while time.time() - t0 < 15:
+                if not os.path.exists(target):
+                    break
+                time.sleep(0.3)
+            check("dlcopy 取消-目标被删除", not os.path.exists(target), target)
+            st, r = api("/api/config", json.dumps({"download_dir": ""}).encode("utf-8"))
+            check("dlcopy 取消-还原下载目录", st == 200, str(r)[:200])
+        except Exception as e:
+            check("dlcopy 取消链路", False, repr(e))
+
         # 8) 统计口径
         st, r = api("/api/stats")
         check("stats 200", st == 200 and "up" in r and "down" in r, str(r)[:200])

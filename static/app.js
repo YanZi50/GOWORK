@@ -323,13 +323,23 @@
       delete state.dlRunning[p.task];
       delete state.dlCopy[p.task];
       updateDlBadge();
+      dropDlRow(p.task);
       setTimeout(() => resetDlBtn(btn, p.task), 1200);
       loadLocalDownloads();
+    } else if (p.type === "canceled") {
+      // 用户取消 dlcopy（文件夹/文件后台复制）：任务从列表移除，角标同步减少
+      if (ring) { ring.classList.add("is-done"); }
+      delete state.dlRunning[p.task];
+      delete state.dlCopy[p.task];
+      updateDlBadge();
+      dropDlRow(p.task);
+      setTimeout(() => resetDlBtn(btn, p.task), 300);
     } else if (p.type === "error") {
       resetDlBtn(btn, p.task);
       delete state.dlRunning[p.task];
       delete state.dlCopy[p.task];
       updateDlBadge();
+      dropDlRow(p.task);
       toast("保存失败：请检查「高级设置 → 下载位置」", "error");
     }
   }
@@ -433,7 +443,7 @@
   }
 
   // 任务 done/canceled 后：仅移除对应行（不整表重渲染防跳动），空列表补 empty 文案、页签计数同步
-  function dropPyRow(id) {
+  function dropDlRow(id) {
     if (state.view !== "dlcenter" || state.dlTab !== "running") return;
     const row = document.querySelector('.dlc-running[data-dlr="' + id + '"]');
     if (row) row.remove();
@@ -446,6 +456,28 @@
     }
   }
 
+  // 单行 patch：只更新进度/速度/状态/按钮区，不重建整行整表（hover 不丢、布局不跳）
+  function patchDlRow(it, row) {
+    if (!row) return;
+    const bar = row.querySelector(".dlc-bar-fill");
+    const pctEl = row.querySelector(".dlc-pct");
+    const spEl = row.querySelector(".dlc-speed");
+    const stEl = row.querySelector(".dlc-state");
+    const actions = row.querySelector(".dlc-actions");
+    const pct = it.total > 0 ? Math.round(it.received / it.total * 100) : 0;
+    if (bar && it.total > 0) bar.style.width = Math.min(100, pct) + "%";
+    if (pctEl) pctEl.textContent = it.total > 0 ? pct + "%" : "…";
+    const paused = it.state === "paused";
+    const errored = it.state === "error";
+    if (spEl) spEl.textContent = paused ? "0 B/s" : fmtSpeed(it.speed || 0);
+    if (stEl) {
+      stEl.textContent = errored ? "失败" : (paused ? "已暂停" : "下载中");
+      if (paused) stEl.style.setProperty("color", "var(--warn,#e6a23c)");
+      else stEl.style.removeProperty("color");
+    }
+    if (actions) actions.innerHTML = dlcActionsHtml(it);
+  }
+
   function applyPyDls(items) {
     const seen = {};
     for (const it of items) {
@@ -455,14 +487,14 @@
       if (it.state === "done") {
         if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
         resetPyBtn(it.id);
-        dropPyRow(it.id);
+        dropDlRow(it.id);
         loadLocalDownloads(); // 完成 → 刷新历史
         continue;
       }
       if (it.state === "canceled") {
         if (cur) { delete state.dlRunning[it.id]; updateDlBadge(); }
         resetPyBtn(it.id);
-        dropPyRow(it.id);
+        dropDlRow(it.id);
         continue;
       }
       const prevState = cur && cur.pyState;
@@ -477,34 +509,31 @@
         const ring = btn.querySelector(".dl-ring");
         if (ring) ring.style.setProperty("--p", it.pct || 0);
       }
-      // 行内更新（不整表重渲染，防 UI 跳动）；状态变化或新任务才重渲染
+      // 行内更新：同一行始终 patch（不整表重渲染）；只有行不存在（新任务）才整表渲染
       if (state.view === "dlcenter" && state.dlTab === "running") {
         const row = document.querySelector('[data-dlr="' + it.id + '"]');
-        if (row && prevState === it.state) {
-          const bar = row.querySelector(".dlc-bar-fill");
-          const pctEl = row.querySelector(".dlc-pct");
-          const spEl = row.querySelector(".dlc-speed");
-          const stEl = row.querySelector(".dlc-state");
-          if (bar && it.total > 0) bar.style.width = Math.min(100, it.pct || 0) + "%";
-          if (pctEl) pctEl.textContent = it.total > 0 ? (it.pct || 0) + "%" : "…";
-          if (spEl) spEl.textContent = it.state === "paused" ? "0 B/s" : fmtSpeed(it.speed);
-          if (stEl) stEl.textContent = it.state === "paused" ? "已暂停" : "下载中";
-        } else if (!row || prevState !== it.state) {
+        if (row) {
+          patchDlRow(it, row);
+        } else {
           renderDlCenter();
         }
       }
     }
     // 清理已消失的 py 任务（取消/删除后角标同步减少）
     let removed = false;
+    const goneKeys = [];
     for (const k of Object.keys(state.dlRunning)) {
       if (String(k).indexOf("py") === 0 && !seen[k]) {
         delete state.dlRunning[k];
         removed = true;
+        goneKeys.push(k);
       }
     }
     if (removed) {
       updateDlBadge();
-      if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
+      if (state.view === "dlcenter" && state.dlTab === "running") {
+        for (const k of goneKeys) dropDlRow(k);
+      }
     }
   }
 
@@ -627,6 +656,26 @@
     __dlConfirmEl = m;
   }
 
+  // 下载中心「下载中」行操作按钮区（py 下载器：暂停/继续/重试+取消；dlcopy 复制任务：取消）
+  function dlcActionsHtml(it) {
+    const st = it.state || it.pyState;
+    const isPy = String(it.id || "").indexOf("py") === 0;
+    const paused = st === "paused";
+    const errored = st === "error";
+    let inner;
+    if (isPy) {
+      inner = (errored
+        ? '<button class="btn btn-primary btn-sm" type="button" data-dl-retry="' + esc(it.id) + '">重试</button>'
+        : (paused
+          ? '<button class="btn btn-primary btn-sm" type="button" data-dl-resume="' + esc(it.id) + '">继续</button>'
+          : '<button class="btn btn-ghost btn-sm" type="button" data-dl-pause="' + esc(it.id) + '">暂停</button>')) +
+        '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>';
+    } else {
+      inner = '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>';
+    }
+    return '<div class="dlc-actions">' + inner + "</div>";
+  }
+
   function dlcRunningHtml(running) {
     if (!running.length) return '<div class="empty">没有正在下载的任务</div>';
     let html = "";
@@ -635,17 +684,6 @@
       const isPy = String(it.id || "").indexOf("py") === 0;
       const paused = it.pyState === "paused";
       const errored = it.pyState === "error";
-      let actions = "";
-      if (isPy) {
-        actions = '<div class="dlc-actions">' +
-          (errored
-            ? '<button class="btn btn-primary btn-sm" type="button" data-dl-retry="' + esc(it.id) + '">重试</button>'
-            : (paused
-              ? '<button class="btn btn-primary btn-sm" type="button" data-dl-resume="' + esc(it.id) + '">继续</button>'
-              : '<button class="btn btn-ghost btn-sm" type="button" data-dl-pause="' + esc(it.id) + '">暂停</button>')) +
-          '<button class="btn btn-ghost btn-sm" type="button" data-dl-cancel="' + esc(it.id) + '" title="取消并删除未完成的部分">取消</button>' +
-          "</div>";
-      }
       html += '<div class="dlc-row dlc-running" data-dlr="' + esc(it.id) + '">' +
         '<span class="row-icon">' + I.download + "</span>" +
         '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div>" +
@@ -658,7 +696,7 @@
         (it.total > 0 ? '<span>' + fmtSize(it.received) + " / " + fmtSize(it.total) + "</span>" : "") +
         '<span class="dlc-dir" title="' + esc(it.dir) + '">' + esc(it.dir) + "</span></div>" +
         (errored && it.error ? '<div class="dlc-err" title="' + esc(it.error) + '">' + esc(it.error) + "</div>" : "") +
-        "</div>" + actions + "</div>";
+        "</div>" + dlcActionsHtml(it) + "</div>";
     }
     return html;
   }

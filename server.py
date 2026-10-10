@@ -298,6 +298,8 @@ class App:
         # 下载统计：key=(share_id, rel_path, 来源IP) -> 记录
         self.downloads = {}
         self._load_downloads()
+        # dlcopy（文件夹/文件后台复制）取消标记：task -> 时间戳
+        self._dlcopy_cancel = {}
 
     # ---- 共享查询 ----
     def get_share(self, share_id):
@@ -318,7 +320,7 @@ class App:
     # ---- 本机下载接管：带进度广播的文件/目录复制 ----
     def _copy_with_progress(self, src, dl_dir, task):
         """复制文件或整个目录树到下载位置，进度经 SSE「dlcopy」广播。
-        task 为 None 时（结果页模式）不发进度。返回保存路径，失败返回 ""。"""
+        task 为 None 时（结果页模式）不发进度。返回保存路径，失败/被取消返回 ""。"""
         if not hasattr(self, "_cp_pct"):
             self._cp_pct, self._cp_last_emit = {}, {}
         try:
@@ -330,7 +332,8 @@ class App:
                 while os.path.exists(target):
                     target = os.path.join(dl_dir, "%s (%d)" % (base, i))
                     i += 1
-                self._copy_tree(src, target, task)
+                if not self._copy_tree(src, target, task):
+                    return ""  # 被取消：目标树已清理
                 return target
             target = os.path.join(dl_dir, os.path.basename(src))
             stem, ext = os.path.splitext(os.path.basename(src))
@@ -342,6 +345,10 @@ class App:
             done = 0
             with open(src, "rb") as fsrc, open(target, "wb") as fdst:
                 while True:
+                    if task and task in self._dlcopy_cancel:
+                        fdst.close()
+                        self._rm_any(target)
+                        return ""
                     chunk = fsrc.read(CHUNK)
                     if not chunk:
                         break
@@ -353,6 +360,17 @@ class App:
             return target
         except Exception:
             return ""
+
+    def _rm_any(self, p):
+        """删除文件或目录树（尽力而为）。"""
+        try:
+            if os.path.isdir(p) and not os.path.islink(p):
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+        except OSError:
+            pass
 
     def _copy_tree(self, src_dir, dst_dir, task):
         total = 0
@@ -370,6 +388,9 @@ class App:
             cur_dst = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
             os.makedirs(cur_dst, exist_ok=True)
             for f in files:
+                if task and task in self._dlcopy_cancel:
+                    self._rm_any(dst_dir)  # 删除已复制的整个目标目录
+                    return False
                 sp = os.path.join(root, f)
                 dp = os.path.join(cur_dst, f)
                 stem, ext = os.path.splitext(f)
@@ -379,6 +400,10 @@ class App:
                     i += 1
                 with open(sp, "rb") as fsrc, open(dp, "wb") as fdst:
                     while True:
+                        if task and task in self._dlcopy_cancel:
+                            fdst.close()
+                            self._rm_any(dst_dir)
+                            return False
                         chunk = fsrc.read(CHUNK)
                         if not chunk:
                             break
@@ -387,6 +412,7 @@ class App:
                         done += len(chunk)
                         if task:
                             self._cp_emit(task, done, total, dp)
+        return True
 
     def _cp_emit(self, task, done, total, path):
         """进度广播节流：每 ≥2% 或 ≥500ms 发一次。"""
@@ -424,7 +450,7 @@ class App:
                 return True
         return False
 
-    def record_download(self, share, rel, full, ip, name=None, saved_path=""):
+    def record_download(self, share, rel, full, ip, name=None, saved_path="", notify_local=True):
         now = time.time()
         key = (share["id"], rel, ip)
         peer = ip
@@ -454,8 +480,10 @@ class App:
                 cur["last_ts"] = now
                 cur["peer"] = peer
             self._save_downloads()
-        # 本机下载：通知桌面端补充「下载中心」历史（saved_path 为 server 接管复制的真实路径）
-        if local:
+        # 本机下载：通知桌面端补充「下载中心」历史（saved_path 为 server 接管复制的真实路径）。
+        # notify_local=False（桌面下载器 raw=1 请求）：历史由下载器完成时自行写入，
+        # 取消/失败/续传的每次请求若都回调会把「没下完的任务」写进已完成列表。
+        if local and notify_local:
             cb = getattr(self, "on_local_download", None)
             if cb:
                 try:
@@ -999,7 +1027,8 @@ class Handler(BaseHTTPRequestHandler):
                                      saved_path=saved)
             self._html_result(saved, os.path.basename(full))
             return
-        self.app.record_download(share, rel, full, self.client_address[0])
+        self.app.record_download(share, rel, full, self.client_address[0],
+                                 notify_local=not bool(qs.get("raw")))
         self._send_file(full, download_name=os.path.basename(full), inline=False)
 
     def _save_to_dl_dir(self, src, name, dl_dir):
@@ -1034,12 +1063,24 @@ class Handler(BaseHTTPRequestHandler):
             saved = self.app._copy_with_progress(full, dl_dir, task)
         except Exception:
             saved = ""
-        if saved:
+        canceled = bool(self.app._dlcopy_cancel.pop(task, None))  # 清理取消标记
+        if canceled:
+            self.app.broadcast("dlcopy", {"type": "canceled", "task": task})
+        elif saved:
             self.app.record_download(share, rel, full, ip, saved_path=saved)
             self.app.broadcast("dlcopy", {"type": "done", "task": task, "path": saved})
         else:
             self.app.broadcast("dlcopy", {"type": "error", "task": task,
                                           "error": "保存失败：无法写入下载目录"})
+
+    def _api_dlcopy_cancel(self, qs):
+        """取消后台复制任务：复制线程检测到标记后删除已复制的文件/目录。"""
+        task = qs.get("task", [""])[0]
+        if not task:
+            self._json(400, {"error": "缺少 task"})
+            return
+        self.app._dlcopy_cancel[task] = time.time()
+        self._json(200, {"ok": True, "task": task})
 
     def _html_result(self, saved, name):
         """本机下载接管的完成页：告诉用户文件保存到哪里了。"""
@@ -1125,7 +1166,8 @@ class Handler(BaseHTTPRequestHandler):
                         except OSError:
                             continue
             self.app.record_download(share, rel, full, self.client_address[0],
-                                     name=os.path.basename(full) + ".zip")
+                                     name=os.path.basename(full) + ".zip",
+                                     notify_local=not bool(qs.get("raw")))
             self._send_file(tmp, download_name=os.path.basename(full) + ".zip",
                             inline=False, ctype="application/zip")
         finally:
@@ -1463,6 +1505,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._api_download(qs)
             if p == "/api/dlcopy":
                 return self._api_dlcopy(qs)
+            if p == "/api/dlcopy/cancel":
+                return self._api_dlcopy_cancel(qs)
             if p == "/api/downloads":
                 return self._api_downloads()
             if p == "/api/zip":

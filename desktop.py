@@ -386,7 +386,18 @@ class NativeBridge(QObject):
 
     @Slot(str)
     def cancelDownload(self, jid):
-        self.window.dl_mgr.cancel(jid)
+        if jid and str(jid).startswith("py"):
+            self.window.dl_mgr.cancel(jid)
+        else:
+            # dlcopy（文件夹/文件后台复制）任务：转发 server 取消，复制线程删除已复制部分
+            try:
+                import urllib.request, urllib.parse
+                port = getattr(S.app, "http_port", 8765)
+                urllib.request.urlopen(
+                    "http://127.0.0.1:%d/api/dlcopy/cancel?task=%s" % (port, urllib.parse.quote(jid or "")),
+                    timeout=5).read()
+            except Exception:
+                pass
 
     @Slot(str, result=str)
     def pickFolder(self):
