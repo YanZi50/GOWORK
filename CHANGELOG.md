@@ -2,6 +2,12 @@
 
 按时间倒序。每个版本标题后的短哈希可直接回滚：`git checkout <短哈希>`。
 
+## v2.6.19（2026-10-10）[0f203ec]
+
+- **修复**：**下载全部失败**（`unknown url type: /api/download?...`）——`startPyDl` 传给 Python 下载器的 URL 是相对路径（`/api/download?...`），urllib 不认相对地址直接报错；重试走同链路同样失败。修复：前端改拼绝对 URL（`location.origin`），桌面端 `startDownload` 对漏传的相对 URL 按本机服务补全兜底（见 BUGS.md B-22）
+- **修复**：**取消按钮无反应**——任务失败（error）后下载线程已退出，取消只是设置事件标记、无人消费，任务永远停在 error。修复：`cancel` 检测到线程已退出时直接置 `canceled` 并清理 `.part`，前端角标同步减少
+- **测试**：自检 PYDL 段改用相对 URL 走真实 NativeBridge 链路（验证补全兜底）；冒烟 **48 项全过**、自检全绿
+
 ## v2.6.18（2026-10-10）[50e8138]
 
 - **新增**：**大文件断点续传真正落地**——文件下载不再走浏览器内置下载，改由桌面端 Python 下载器（`DownloadManager`）接管：流式分片写 `.part` 临时文件，重启/重试时按已有 `.part` 大小发 `Range: bytes=done-` 续传，完成后原子改名；同名自动加「 (1)」后缀不覆盖

@@ -16,6 +16,12 @@
 
 ## 服务内核（server.py）
 
+### B-22 下载器拿到相对 URL 报 unknown url type + error 任务取消无反应（2026-10-10，v2.6.19 修正）
+- **现象**：点「下载」全部失败，错误 `unknown url type: /api/download?share=...`；失败后点「重试」「取消」均无反应，角标不减少。
+- **根因**（两个独立问题）：① 前端 `startPyDl` 把**相对路径**（`/api/download?...`）传给 Python 下载器，urllib 只认 `http(s)://` 绝对地址 → 立即 `unknown url type`；重试走同一 URL 所以同样失败。② 任务失败（error）后下载线程已退出，`cancel` 只设置 `_cancel` 事件标记、无人消费 → 任务永远停在 error，前端「取消」无效。
+- **解决**：① 前端用 `location.origin` 拼绝对 URL；`NativeBridge.startDownload` 对漏传相对 URL 按 `http://127.0.0.1:<http_port>` 补全兜底。② `cancel` 检测线程已退出（state≠running 或线程不存活）时直接置 `canceled` 并删除 `.part`。
+- **防复现**：所有走 urllib/下载器的 URL 必须是绝对地址（前端拼 + 后端兜底双保险）；任何"事件标记类"状态变更必须考虑消费者线程已死的情形。selftest PYDL 段改用相对 URL 走真实 NativeBridge 链路断言下载成功。
+
 ### B-21 本机+已设下载位置时 `/api/download` 返回 HTML 结果页，桌面下载器把结果页当文件存（2026-10-10，v2.6.18 修正）
 - **现象**：桌面端 Python 下载器（断点续传/队列）下载本机共享文件，文件大小异常（约 1KB，实为结果页 HTML），内容错乱；独立脚本复现下载器无 bug，selftest `PYDL_RESUME` 文件尺寸 1037≠23。
 - **根因**：server `_api_download` 对「本机 + 已配置下载位置」走**接管复制分支**：把文件复制到下载目录后返回 `_html_result` 完成页（这是 v2.5 本机浏览器下载的既定行为）。Python 下载器请求同样命中该分支 → 拿到的是 HTML 页面而非文件流。
