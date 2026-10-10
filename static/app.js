@@ -1669,6 +1669,7 @@
 
   Bus.on("config:loaded", (cfg) => {
     renderHeader(cfg);
+    renderNetStatus();
     // 若当前浏览的共享已被删除，退回共享列表
     if (state.share && cfg.shares && !cfg.shares.some((s) => s.id === state.share.id)) {
       state.share = null;
@@ -1678,6 +1679,7 @@
   });
   Bus.on("peers:loaded", (peers) => {
     $("#peerCount").textContent = peers.length ? String(peers.length) : "";
+    renderNetStatus();
     if (state.view === "peers") renderPeers();
   });
   Bus.on("listing:refresh", () => {
@@ -1686,6 +1688,86 @@
   Bus.on("native:toast", (msg) => {
     if (msg) toast(msg, "ok");
   });
+
+  /* ---------------- 网络状态自检 ---------------- */
+
+  function _isLanIp(ip) {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return false;
+    const a = ip.split(".").map(Number);
+    if (a[0] === 10) return true;                                   // 10.0.0.0/8
+    if (a[0] === 172 && a[1] >= 16 && a[1] <= 31) return true;      // 172.16-31/12
+    if (a[0] === 192 && a[1] === 168) return true;                  // 192.168/16
+    return false;
+  }
+
+  function computeNetStatus() {
+    const cfg = state.config;
+    const ips = (cfg && cfg.addresses) || [];
+    const v4 = ips.filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+    const lan = v4.filter(_isLanIp);
+    const apipa = v4.filter((ip) => ip.indexOf("169.254.") === 0);
+    const peers = (state.peers || []).length;
+    let level = "ok", text = "";
+    if (!v4.length || (v4.length > 0 && v4.length === apipa.length)) {
+      level = "bad"; text = "网络未连接";
+    } else if (peers > 0) {
+      level = "ok"; text = "正常 · " + peers + " 台设备";
+    } else if (lan.length > 0) {
+      level = "warn"; text = "未发现设备";
+    } else {
+      level = "warn"; text = "非局域网 IP";
+    }
+    return { level: level, text: text, v4: v4, lan: lan, apipa: apipa, peers: peers };
+  }
+
+  function renderNetStatus() {
+    const btn = $("#netStatusBtn");
+    if (!btn) return;
+    const st = computeNetStatus();
+    btn.hidden = false;
+    btn.innerHTML = '<span class="net-dot ' + st.level + '"></span><span class="net-text">' + esc(st.text) + "</span>";
+    btn.title = "网络状态：" + st.text + "，点击查看排查指引";
+  }
+
+  function openNetPanel() {
+    const st = computeNetStatus();
+    const items = [];
+    if (!st.v4.length) {
+      items.push({ ok: false, title: "本机未获取到 IP 地址", tip: "请检查网线是否插好、WiFi 是否已连接。连上后状态会自动更新。" });
+    } else if (st.apipa.length && st.v4.length === st.apipa.length) {
+      items.push({ ok: false, title: "IP 为 169.254.x（未分配到有效地址）", tip: "说明路由器没有给电脑分配 IP。重启路由器或重连网络，状态会自动更新。" });
+    } else {
+      items.push({ ok: true, title: "本机 IP 是局域网地址", tip: "同一网段内的设备可直接互访。" });
+      if (!st.lan.length) {
+        items.push({ ok: false, title: "没有局域网 IP（192.168.x / 10.x / 172.16-31.x）", tip: "当前 IP 可能来自 VPN、手机热点或公网。若两台电脑网段不一致（如一台 192.168.1.x、一台 10.x），先让它们连同一个路由器 / WiFi。" });
+      }
+    }
+    if (st.peers > 0) {
+      items.push({ ok: true, title: "已发现 " + st.peers + " 台设备", tip: "网络正常，可直接共享与下载。" });
+    } else {
+      items.push({ ok: false, title: "没有发现任何设备", tip: "依次确认：① 对方也开着本软件；② 两台电脑连同一个 WiFi / 路由器；③ Windows 防火墙已放行（设置→网络和 Internet→当前网络设为「专用」；Windows 安全中心→防火墙→允许应用通过防火墙→勾选「局域网快传」的专用+公用）；④ 若是公司网络，可能被隔离——用手机热点或家用路由器验证。" });
+    }
+    let html = '<div class="net-summary">当前状态：<span class="net-dot ' + st.level + '"></span>' + esc(st.text) + "</div>";
+    html += '<div class="net-ips"><div class="net-ips-title">本机 IP（与对方比对是否同网段）</div><div class="net-ips-list">' +
+      (st.v4.length ? st.v4.map((ip) => "<code>" + esc(ip) + "</code>").join("") : '<span class="dim">无</span>') +
+      "</div></div>";
+    html += '<div class="net-items">';
+    for (const it of items) {
+      html += '<div class="net-item"><span class="net-ok">' + (it.ok ? "ok" : "bad") + "</span>" +
+        '<div class="net-item-main"><div class="net-item-title">' + esc(it.title) + "</div>" +
+        '<div class="net-item-tip">' + esc(it.tip) + "</div></div></div>";
+    }
+    html += "</div>";
+    $("#netBody").innerHTML = html;
+    $("#netModal").hidden = false;
+  }
+
+  function bindNetStatus() {
+    const btn = $("#netStatusBtn");
+    if (!btn) return;
+    btn.addEventListener("click", openNetPanel);
+    renderNetStatus();
+  }
 
   function applyTheme(theme) {
     const root = document.documentElement;
@@ -1733,6 +1815,7 @@
 
   function init() {
     bindTheme();
+    bindNetStatus();
     bindUI();
     connectSSE();
     initDesktopBridge();

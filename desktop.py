@@ -955,6 +955,8 @@ def _selftest(app, win, svc):
             " acPwdVal: (function(){ var v=''; document.querySelectorAll('#adminList input[data-f=pwd]').forEach(function(i){ if(i.value) v=i.value; }); return v; })()," +
             " themeBtn: !!document.getElementById('themeBtn')," +
             " themeMode: document.documentElement.dataset.theme || 'dark'," +
+            " netBtn: !document.getElementById('netStatusBtn') || !document.getElementById('netStatusBtn').hidden," +
+            " netText: (document.getElementById('netStatusBtn')||{}).textContent || ''," +
             " advCard: !!document.getElementById('advCard')," +
             " advAuto: !!document.getElementById('advAutostart')," +
             " dlDirEl: !!document.getElementById('dlDirVal')," +
@@ -1223,6 +1225,13 @@ def _selftest(app, win, svc):
 
     def shot5d():
         run_js_checks("dlcenter_done")
+        # 网络状态排查：点击顶栏徽标 → 面板应打开，含 IP 列表与检查项
+        win.view.page().runJavaScript(
+            "(function(){ var b=document.getElementById('netStatusBtn'); if (b) b.click();"
+            " return JSON.stringify({open: !document.getElementById('netModal').hidden,"
+            " ips: document.querySelectorAll('.net-ips-list code').length,"
+            " items: document.querySelectorAll('.net-item').length}); })()",
+            lambda v: checks.append("NET_PANEL %s" % (v or "null")))
         QTimer.singleShot(300, shot6)
 
     def shot6():

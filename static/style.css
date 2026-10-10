@@ -175,6 +175,79 @@ body { background-image: var(--bg-grad); background-attachment: fixed; }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--muted); }
 .btn-ghost:hover { color: var(--text); border-color: var(--border-2); background: var(--surface-2); }
 
+/* ---------- 网络状态徽标 ---------- */
+
+.net-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.net-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-block;
+}
+.net-dot.ok { background: #34d399; box-shadow: 0 0 6px rgba(52, 211, 153, 0.7); }
+.net-dot.warn { background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.7); }
+.net-dot.bad { background: #f87171; box-shadow: 0 0 6px rgba(248, 113, 113, 0.7); }
+.net-text { line-height: 1; }
+
+/* 网络排查面板 */
+.net-body { padding: 4px 2px 2px; }
+.net-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  margin-bottom: 10px;
+}
+.net-ips { margin-bottom: 10px; }
+.net-ips-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.net-ips-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.net-ips-list code {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12.5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.net-items { display: flex; flex-direction: column; gap: 8px; }
+.net-item {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.net-ok {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #fff;
+}
+.net-ok.ok { background: #34d399; }
+.net-ok.bad { background: #f87171; }
+.net-item-main { min-width: 0; }
+.net-item-title { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+.net-item-tip { font-size: 12px; color: var(--muted); line-height: 1.55; }
+.dim { color: var(--muted); font-size: 12px; }
+
 .btn-danger { color: var(--danger); border-color: rgba(255, 111, 111, 0.35); background: var(--danger-soft); }
 
 .btn-sm { padding: 5px 10px; font-size: 12.5px; }
