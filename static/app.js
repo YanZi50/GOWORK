@@ -287,7 +287,7 @@
     const name = path.split("/").filter(Boolean).pop() || "文件";
     const task = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     // 进入下载中列表 + 顶栏角标
-    state.dlRunning[task] = { name: name, dir: state.config.download_dir || "", size: 0, received: 0, total: 0, ts: Date.now() / 1000 };
+    state.dlRunning[task] = { name: name, dir: state.config.download_dir || "", size: 0, received: 0, total: 0, ts: Date.now() / 1000, path: path };
     state.dlCopy[task] = { name: name };
     updateDlBadge();
     // 按钮 -> 同尺寸圆圈进度（不跳动布局）
@@ -428,6 +428,7 @@
         id: jid, name: d.name || name, dir: d.dir || "", size: total0,
         received: done0, total: total0, speed: 0, pyState: "running",
         error: "", ts: Date.now() / 1000,
+        path: path,  // 共享页路径：切页重渲染时据此恢复按钮任务态（防重）
       };
       // 按钮圆圈进度由轮询驱动（关联任务 id）；续传时先显示已下载部分的进度
       if (btn) { btn.dataset.dlpyid = jid; btn.dataset.dlctask = ""; }
@@ -459,10 +460,13 @@
       }
       const jid = d.id;
       const done0 = Number(d.done) || 0, total0 = Number(d.total) || 0;
+      // 解析记录 URL 里的共享路径：续传任务同样关联共享页按钮（防重复下载）
+      let recPath = "";
+      try { recPath = new URL(url).searchParams.get("path") || ""; } catch (e) {}
       state.dlRunning[jid] = {
         id: jid, name: d.name || name, dir: d.dir || "", size: total0,
         received: done0, total: total0, speed: 0, pyState: "running",
-        error: "", ts: Date.now() / 1000,
+        error: "", ts: Date.now() / 1000, path: recPath,
       };
       updateDlBadge();
       if (state.view === "dlcenter" && state.dlTab === "running") renderDlCenter();
@@ -571,13 +575,20 @@
         id: it.id, name: it.name, dir: it.dir, size: it.total || 0,
         received: it.done || 0, total: it.total || 0, speed: it.speed || 0,
         pyState: it.state, error: it.error || "", ts: it.ts || Date.now() / 1000,
+        path: (cur && cur.path) || "",
       };
       // 按钮圆圈进度（暂停时保持加载圈不动，悬停提示防止误点重复下载）
       const btn = document.querySelector('[data-dlpyid="' + it.id + '"]');
       if (btn) {
         const ring = btn.querySelector(".dl-ring");
-        if (ring) ring.style.setProperty("--p", it.pct || 0);
-        btn.title = it.state === "paused" ? "已暂停 · 点击下载中心继续" : "正在下载";
+        const pct = it.pct || 0;
+        if (ring) {
+          ring.style.setProperty("--p", pct);
+          // 进度 <2% 时旋转（加载中动效），达到 2% 后显示进度弧——首次下载也能看到“在动”
+          ring.classList.toggle("dl-spin", pct < 2 && it.state === "running");
+        }
+        btn.title = (it.state === "paused" ? "已暂停 · 点击下载中心继续" : "正在下载") +
+          " · " + fmtSize(it.done || 0) + " / " + fmtSize(it.total || 0);
       }
       // 行内更新：同一行始终 patch（不整表重渲染）；只有行不存在（新任务）才整表渲染
       if (state.view === "dlcenter" && state.dlTab === "running") {
@@ -1007,14 +1018,23 @@
         const icon = isDir ? I.folder : fileIcon(e.name);
         const sub = isDir ? "文件夹" : fmtSize(e.size) + " · " + fmtTime(e.mtime);
         const filePath = (state.path === "/" ? "" : state.path) + "/" + e.name;
+        // 任务态恢复：该文件有下载中/暂停任务时，按钮渲染为进度圈（切页返回不丢状态、防重复下载）
+        const runningTask = !isDir && Object.values(state.dlRunning).find(
+          (t) => t.path === filePath && t.pyState && t.pyState !== "done" && t.pyState !== "canceled");
         let actions = "";
         if (!isDir) {
-          actions = '<div class="row-actions">' +
-            '<button class="btn btn-ghost btn-sm" data-act="download" data-path="' + esc(filePath) + '">' + I.download + '<span class="btn-label">下载</span></button>' +
-            (INLINE_EXT.has((e.name.split(".").pop() || "").toLowerCase())
-              ? '<button class="btn btn-ghost btn-sm" data-act="preview" data-path="' + esc(filePath) + '">预览</button>'
-              : "") +
-            "</div>";
+          const dlBtnHtml = '<button class="btn btn-ghost btn-sm" data-act="download" data-path="' + esc(filePath) + '">' + I.download + '<span class="btn-label">下载</span></button>';
+          if (runningTask) {
+            const ringPct = safePct(runningTask.received, runningTask.total);
+            actions = '<div class="row-actions"><button class="btn btn-ghost btn-sm is-busy" data-dlpyid="' + esc(runningTask.id) + '" data-dlRestore="' + esc(dlBtnHtml) + '" title="' + esc(runningTask.pyState === "paused" ? "已暂停 · 点击下载中心继续" : "正在下载") + '">' +
+              '<span class="dl-ring' + (ringPct < 2 ? " dl-spin" : "") + '" style="--p:' + ringPct + '"></span></button></div>';
+          } else {
+            actions = '<div class="row-actions">' + dlBtnHtml +
+              (INLINE_EXT.has((e.name.split(".").pop() || "").toLowerCase())
+                ? '<button class="btn btn-ghost btn-sm" data-act="preview" data-path="' + esc(filePath) + '">预览</button>'
+                : "") +
+              "</div>";
+          }
         }
         html += '<div class="file-row' + (isDir ? " is-dir" : "") + '" data-dir="' + (isDir ? "1" : "0") + '" data-path="' + esc(filePath) + '" data-size="' + (e.size || 0) + '">' +
           '<span class="row-icon">' + icon + "</span>" +
@@ -1035,6 +1055,14 @@
             showCtxMenu(ev.clientX, ev.clientY, s.id, path, row);
           });
         } else {
+          // 任务态按钮（下载中/暂停）：点击给出反馈，不启动新任务
+          const busy = row.querySelector("[data-dlpyid]");
+          if (busy) {
+            busy.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              toast("已有下载任务，可在下载中心查看进度", "ok");
+            });
+          }
           row.querySelectorAll("[data-act]").forEach((btn) => {
             btn.addEventListener("click", (ev) => {
               ev.stopPropagation();
