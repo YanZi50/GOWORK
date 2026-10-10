@@ -373,7 +373,10 @@
 
   function startPyDl(shareId, path, btn, isDir) {
     const name = path.split("/").filter(Boolean).pop() || "文件";
-    const url = (isDir ? "/api/zip" : "/api/download") + "?share=" +
+    // Python 下载器(urllib)不认相对 URL，必须拼绝对地址
+    const base = (location.origin && location.origin !== "null") ? location.origin :
+      ("http://" + (location.hostname || "127.0.0.1") + ":" + (location.port || 8765));
+    const url = base + (isDir ? "/api/zip" : "/api/download") + "?share=" +
       encodeURIComponent(shareId) + "&path=" + encodeURIComponent(path);
     const task = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     if (btn) {

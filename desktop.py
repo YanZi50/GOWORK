@@ -288,6 +288,16 @@ class DownloadManager:
             return
         j["_cancel"].set()
         j["_pause"].clear()
+        # 线程已退出（error 等终态）时取消事件无人消费：直接置 canceled 并清理 .part，
+        # 否则任务永远停在 error、前端「取消」看起来没反应
+        th = j.get("_thread")
+        if j["state"] != "running" or (th and not th.is_alive()):
+            j["state"] = "canceled"
+            j["speed"] = 0.0
+            try:
+                os.remove(j["part"])
+            except OSError:
+                pass
 
     def snapshot(self, limit=60):
         with self._lock:
@@ -339,6 +349,9 @@ class NativeBridge(QObject):
             return json.dumps({"ok": False, "error": "未设置下载位置，请在高级设置中先选择"})
         if not os.path.isdir(dl_dir):
             return json.dumps({"ok": False, "error": "下载位置不存在，请在高级设置中重新选择"})
+        if url and not url.lower().startswith(("http://", "https://")):
+            # 前端必须传绝对 URL（urllib 不认相对路径）；漏传时按本机服务补全
+            url = "http://127.0.0.1:%d%s" % (getattr(S.app, "http_port", 8765), url)
         jid = self.window.dl_mgr.start(url or "", name or "download", dl_dir)
         return json.dumps({"ok": True, "id": jid, "name": name or "download",
                            "dir": dl_dir})
@@ -1443,11 +1456,14 @@ def _selftest(app, win, svc):
         # ---- Python 下载器：断点续传 + 传输队列（v2.6.18）----
         try:
             import urllib.parse as _up2
-            dl_url = "http://127.0.0.1:%d/api/download?share=%s&path=%s" % (
-                port, _sid, _up2.quote("/示例文件.txt"))
+            # 用相对 URL 走 NativeBridge（真实前端链路）：desktop 侧必须补全为绝对 URL，
+            # 否则 urllib 报 unknown url type（B-22 曾导致重试/下载全部失败）
+            dl_url = "/api/download?share=%s&path=%s" % (_sid, _up2.quote("/示例文件.txt"))
             _q1 = tmp / "队列区"
             _q1.mkdir(exist_ok=True)
-            jid = win.dl_mgr.start(dl_url, "队列测试.txt", str(_q1))
+            _j0 = json.loads(win.bridge.startDownload(dl_url, "队列测试.txt") or "{}")
+            jid = _j0.get("id")
+            _d0ok = bool(_j0.get("ok"))
             _t0 = time.time()
             while time.time() - _t0 < 8:
                 _st = next((s for s in win.dl_mgr.snapshot() if s["id"] == jid), None)
@@ -1455,23 +1471,22 @@ def _selftest(app, win, svc):
                     break
                 time.sleep(0.2)
             _d1 = bool(_st and _st["state"] == "done")
-            _f1 = (_q1 / "队列测试.txt").exists()
+            _f1 = (_dl_zone / "队列测试.txt").exists()  # bridge 落盘到 config 的 download_dir
             _h1 = any(it.get("name") == "队列测试.txt" for it in win._load_local_downloads())
-            print("PYDL jid=%s state=%s done=%s file=%s hist=%s"
-                  % (jid, _st and _st["state"], _d1, _f1, _h1), flush=True)
-            if not _d1:
+            print("PYDL ok=%s jid=%s state=%s done=%s file=%s hist=%s"
+                  % (_d0ok, jid, _st and _st["state"], _d1, _f1, _h1), flush=True)
+            if not (_d0ok and _d1):
                 print("PYDL_FAIL", flush=True)
             if not _f1:
                 print("PYDL_FILE_FAIL", flush=True)
             if not _h1:
                 print("PYDL_HIST_FAIL", flush=True)
             # 断点续传：预写 .part 前 8 字节 → 下载器应跳过已下载部分续传，最终文件完整、.part 消失
-            _q2 = tmp / "队列区2"
-            _q2.mkdir(exist_ok=True)
-            _pf = _q2 / "续传测试.txt.part"
+            _pf = _dl_zone / "续传测试.txt.part"
             _src = (tmp / "示例文件.txt").read_bytes()
             _pf.write_bytes(_src[:8])
-            jid2 = win.dl_mgr.start(dl_url, "续传测试.txt", str(_q2))
+            _j2 = json.loads(win.bridge.startDownload(dl_url, "续传测试.txt") or "{}")
+            jid2 = _j2.get("id")
             _t1 = time.time()
             while time.time() - _t1 < 8:
                 _st2 = next((s for s in win.dl_mgr.snapshot() if s["id"] == jid2), None)
@@ -1479,13 +1494,13 @@ def _selftest(app, win, svc):
                     break
                 time.sleep(0.2)
             _resume_ok = bool(_st2 and _st2["state"] == "done" and
-                              (_q2 / "续传测试.txt").exists() and
-                              (_q2 / "续传测试.txt").read_bytes() == _src and
+                              (_dl_zone / "续传测试.txt").exists() and
+                              (_dl_zone / "续传测试.txt").read_bytes() == _src and
                               not _pf.exists())
             print("PYDL_RESUME state=%s err=%s done=%d total=%d fsize=%d srcsize=%d resume_ok=%s part_gone=%s"
                   % (_st2 and _st2["state"], _st2 and _st2["error"], _st2 and _st2["done"],
                      _st2 and _st2["total"],
-                     (_q2 / "续传测试.txt").stat().st_size if (_q2 / "续传测试.txt").exists() else -1,
+                     (_dl_zone / "续传测试.txt").stat().st_size if (_dl_zone / "续传测试.txt").exists() else -1,
                      len(_src), _resume_ok, not _pf.exists()), flush=True)
             if not _resume_ok:
                 print("PYDL_RESUME_FAIL", flush=True)
