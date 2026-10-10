@@ -232,6 +232,7 @@ class DownloadManager:
                                 os.remove(j["part"])
                             except OSError:
                                 pass
+                            self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
                             return
                         if j["state"] == "paused":
                             j["_pause"].wait(0.3)  # 暂停：阻塞轮询，不读取数据
@@ -253,6 +254,7 @@ class DownloadManager:
                     os.remove(j["part"])
                 except OSError:
                     pass
+                self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
                 return
             os.replace(j["part"], j["path"])  # 原子完成：.part -> 正式文件
             j["state"] = "done"
@@ -262,6 +264,8 @@ class DownloadManager:
             j["state"] = "error"
             j["error"] = str(e)
             j["speed"] = 0.0
+            # 保留 .part：失败后可「重试」从断点继续
+            self.win._dl_note_q.put({"py_error": j})  # 写「下载失败」历史
 
     def pause(self, jid):
         j = self.jobs.get(jid)
@@ -307,6 +311,7 @@ class DownloadManager:
                 os.remove(j["part"])
             except OSError:
                 pass
+            self.win._dl_note_q.put({"py_canceled": j})  # 写「已取消」历史
 
     def snapshot(self, limit=60):
         with self._lock:
@@ -332,7 +337,8 @@ class DownloadManager:
             items = [it for it in items if it.get("key") != key]
             size = j["total"] or (os.path.getsize(j["path"]) if os.path.isfile(j["path"]) else 0)
             items.insert(0, {"key": key, "name": j["name"], "size": size,
-                             "dir": j["dir"], "path": j["path"], "ts": time.time()})
+                             "dir": j["dir"], "path": j["path"], "ts": time.time(),
+                             "status": "done", "received": size, "total": size})
             self.win._save_local_downloads(items[:200])
         except Exception:
             pass
@@ -449,10 +455,13 @@ class NativeBridge(QObject):
     @Slot(result=str)
     def getLocalDownloads(self):
         items = self.window._load_local_downloads()
-        # 历史记录里「未定位」的外部浏览器下载：尝试补一次定位（近 24 小时同名同大小）
+        # 历史记录里「未定位」的外部浏览器下载：尝试补一次定位（近 24 小时同名同大小）。
+        # 已取消/下载失败的任务没有真实保存位置，跳过（避免误定位到旧文件）
         changed = False
         for it in items:
             if it.get("dir"):
+                continue
+            if (it.get("status") or "done") != "done":
                 continue
             if not it.get("name"):
                 continue
@@ -735,9 +744,13 @@ class MainWindow(QMainWindow):
                 item = self._dl_note_q.get_nowait()
                 if isinstance(item, dict) and item.get("py_done"):
                     self._py_done_ui(item["py_done"])
+                elif isinstance(item, dict) and item.get("py_canceled"):
+                    self._note_py_canceled(item["py_canceled"])
+                elif isinstance(item, dict) and item.get("py_error"):
+                    self._note_py_error(item["py_error"])
                 else:
-                    share, rel, full, saved = item
-                    self._note_local_download(share, rel, full, saved)
+                    share, rel, full, saved, status, received, total = item
+                    self._note_local_download(share, rel, full, saved, status, received, total)
         except queue.Empty:
             pass
 
@@ -795,10 +808,37 @@ class MainWindow(QMainWindow):
     def _clear_local_downloads(self):
         return self._save_local_downloads([])
 
+    def _write_py_record(self, j, status):
+        """Python 下载器取消/失败：写一条「已取消/下载失败」历史，不当作完成。
+        在主线程（经 _dl_note_q）调用，写文件并通知前端刷新。"""
+        try:
+            if not j or not j.get("name"):
+                return  # 无实际文件名的占位任务（selftest 逻辑桩）不写历史
+            items = self._load_local_downloads()
+            key = os.path.normcase(os.path.realpath(j.get("path", ""))) \
+                if j.get("path") else ("py:" + j.get("id", ""))
+            # 取消时若该文件已有完成记录（同一保存路径），一并改写为取消状态，不再显示为完成
+            items = [it for it in items if it.get("key") != key]
+            total = j.get("total") or 0
+            received = j.get("done") or 0
+            items.insert(0, {"key": key, "name": j.get("name", ""),
+                             "size": total or received,
+                             "dir": j.get("dir", ""), "path": "", "ts": time.time(),
+                             "status": status, "received": received, "total": total,
+                             "error": j.get("error", "")})
+            self._save_local_downloads(items[:200])
+            self.view.page().runJavaScript(
+                "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
+                json.dumps({"type": "record", "status": status,
+                            "name": j.get("name", "")}, ensure_ascii=False) + ")")
+        except Exception:
+            pass
+
     # 本机下载自己的共享（Qt 窗口或外部浏览器访问本机地址）：
     # server 在下载统计里识别本机来源，回调这里补充「下载中心」历史。
     # 注意在 handler 线程回调，切到主线程再写文件/推事件。
-    def _note_local_download(self, share, rel, full, saved=""):
+    def _note_local_download(self, share, rel, full, saved="", status="done",
+                             received=0, total=0):
         try:
             items = self._load_local_downloads()
             name = (os.path.basename(full) or rel.rsplit("/", 1)[-1] or "下载文件")
@@ -814,26 +854,29 @@ class MainWindow(QMainWindow):
             for it in items:
                 if it.get("name") == name and it.get("dir") and now - float(it.get("ts", 0)) < 30:
                     return
-            # 保存位置：优先用 server 接管复制的真实路径（文件/目录都算）；否则探测浏览器下载目录
+            # 保存位置：优先用 server 接管复制的真实路径（文件/目录都算）；否则探测浏览器下载目录。
+            # 取消/失败的任务没有真实保存位置，不探测（避免误定位到旧文件）。
             ddir, dpath = "", ""
-            if saved and os.path.exists(saved):
-                if os.path.isfile(saved):
-                    ddir, dpath = os.path.dirname(saved), saved
-                else:
-                    # 目录复制：保存位置就是该目录本身
-                    ddir, dpath = saved, saved
-            elif os.path.isfile(full):
-                ddir, dpath = _locate_browser_download(full, name, size)
-                if not dpath:
-                    dirs = _browser_download_dirs()
-                    if dirs:
-                        ddir = dirs[0]
-            elif os.path.isdir(full):
-                # 外部浏览器下载的目录（ZIP）：按 <名字>.zip 在浏览器目录补定位
-                ddir, dpath = _locate_browser_download(None, name, size)
+            if status == "done":
+                if saved and os.path.exists(saved):
+                    if os.path.isfile(saved):
+                        ddir, dpath = os.path.dirname(saved), saved
+                    else:
+                        # 目录复制：保存位置就是该目录本身
+                        ddir, dpath = saved, saved
+                elif os.path.isfile(full):
+                    ddir, dpath = _locate_browser_download(full, name, size)
+                    if not dpath:
+                        dirs = _browser_download_dirs()
+                        if dirs:
+                            ddir = dirs[0]
+                elif os.path.isdir(full):
+                    # 外部浏览器下载的目录（ZIP）：按 <名字>.zip 在浏览器目录补定位
+                    ddir, dpath = _locate_browser_download(None, name, size)
             items = [it for it in items if it.get("key") != key]
             items.insert(0, {"key": key, "name": name, "size": size,
-                             "dir": ddir, "path": dpath, "ts": now})
+                             "dir": ddir, "path": dpath, "ts": now,
+                             "status": status, "received": received, "total": total})
             self._save_local_downloads(items[:200])
             self.view.page().runJavaScript(
                 "window.__lanshareDlEvent && window.__lanshareDlEvent(" +
@@ -951,7 +994,8 @@ def run():
     # server 识别到本机下载（自己的共享）时，回调桌面端补充「下载中心」历史。
     # 回调来自 HTTP 线程：仅入队，由主线程 QTimer 轮询处理（线程安全、事件循环无关）。
     try:
-        S.app.on_local_download = lambda share, rel, full, saved="": win._dl_note_q.put((share, rel, full, saved))
+        S.app.on_local_download = lambda share, rel, full, saved="", status="done", received=0, total=0: \
+            win._dl_note_q.put((share, rel, full, saved, status, received, total))
     except Exception:
         pass
 
@@ -1556,6 +1600,16 @@ def _selftest(app, win, svc):
             print("PYDL_HIST_FILTER=%s n=%d" % (_filt_ok, len(_hist2)), flush=True)
             if not _filt_ok:
                 print("PYDL_HIST_FILTER_FAIL", flush=True)
+            # 取消写「已取消」历史：记录含 status=canceled + 已下载字节（前端显示"已取消 · 已下载 X"）
+            win._write_py_record({"name": "取消测试.txt", "path": str(tmp / "取消测试.txt"),
+                                  "done": 123, "total": 1000, "dir": "", "error": ""}, "canceled")
+            _hist3 = win._load_local_downloads()
+            _can_rec = next((it for it in _hist3 if it.get("name") == "取消测试.txt"), None)
+            _can_ok = bool(_can_rec and _can_rec.get("status") == "canceled"
+                           and _can_rec.get("received") == 123 and _can_rec.get("total") == 1000)
+            print("PYDL_CANCEL_REC=%s" % _can_ok, flush=True)
+            if not _can_ok:
+                print("PYDL_CANCEL_REC_FAIL", flush=True)
         except Exception as e:
             print("PYDL_ERR", repr(e), flush=True)
         win.view.page().runJavaScript(

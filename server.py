@@ -298,8 +298,9 @@ class App:
         # 下载统计：key=(share_id, rel_path, 来源IP) -> 记录
         self.downloads = {}
         self._load_downloads()
-        # dlcopy（文件夹/文件后台复制）取消标记：task -> 时间戳
+        # dlcopy（文件夹/文件后台复制）取消标记：task -> 时间戳；_dlcopy_done：task -> 已复制字节
         self._dlcopy_cancel = {}
+        self._dlcopy_done = {}
 
     # ---- 共享查询 ----
     def get_share(self, share_id):
@@ -415,7 +416,7 @@ class App:
         return True
 
     def _cp_emit(self, task, done, total, path):
-        """进度广播节流：每 ≥2% 或 ≥500ms 发一次。"""
+        """进度广播节流：每 ≥2% 或 ≥500ms 发一次。同时记录已复制量（取消时写历史用）。"""
         try:
             pct = int(done * 100 / total)
             now = time.time()
@@ -425,6 +426,7 @@ class App:
                 if pct - last >= 2 or now - last_emit >= 0.5:
                     self._cp_pct[task] = pct
                     self._cp_last_emit[task] = now
+                self._dlcopy_done[task] = done  # 最新已复制字节数（取消时写"已下载 X"）
             if pct - last >= 2 or now - last_emit >= 0.5:
                 self.broadcast("dlcopy", {"type": "progress", "task": task,
                                           "percent": pct, "path": path})
@@ -450,7 +452,8 @@ class App:
                 return True
         return False
 
-    def record_download(self, share, rel, full, ip, name=None, saved_path="", notify_local=True):
+    def record_download(self, share, rel, full, ip, name=None, saved_path="", notify_local=True,
+                        status="done", received=0, total=0):
         now = time.time()
         key = (share["id"], rel, ip)
         peer = ip
@@ -487,7 +490,7 @@ class App:
             cb = getattr(self, "on_local_download", None)
             if cb:
                 try:
-                    cb(share, rel, full, saved_path or "")
+                    cb(share, rel, full, saved_path or "", status, received, total)
                 except Exception:
                     pass
         self.broadcast("downloads")
@@ -1064,12 +1067,18 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             saved = ""
         canceled = bool(self.app._dlcopy_cancel.pop(task, None))  # 清理取消标记
+        received = self.app._dlcopy_done.pop(task, 0) or 0
         if canceled:
+            # 取消：写一条「已取消」历史（下载了多少），不当作下载完成
+            self.app.record_download(share, rel, full, ip,
+                                     status="canceled", received=received,
+                                     total=os.path.getsize(full) if os.path.isfile(full) else 0)
             self.app.broadcast("dlcopy", {"type": "canceled", "task": task})
         elif saved:
-            self.app.record_download(share, rel, full, ip, saved_path=saved)
+            self.app.record_download(share, rel, full, ip, saved_path=saved, status="done")
             self.app.broadcast("dlcopy", {"type": "done", "task": task, "path": saved})
         else:
+            self.app.record_download(share, rel, full, ip, status="error")
             self.app.broadcast("dlcopy", {"type": "error", "task": task,
                                           "error": "保存失败：无法写入下载目录"})
 

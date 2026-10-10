@@ -259,6 +259,9 @@
     } else if (p.type === "done") {
       delete state.dlRunning[p.id];
       loadLocalDownloads();   // 从桌面端拉最新历史（已完成列表刷新）
+    } else if (p.type === "record") {
+      // 桌面端写入「已取消/下载失败」历史后刷新列表
+      loadLocalDownloads();
     }
     updateDlBadge();
   };
@@ -456,8 +459,10 @@
     }
   }
 
-  // 单行 patch：只更新进度/速度/状态/按钮区，不重建整行整表（hover 不丢、布局不跳）
-  function patchDlRow(it, row) {
+  // 单行 patch：只更新进度/速度/状态文字，不重建整行整表（hover 不丢、布局不跳）。
+  // 按钮区只在「状态切换」时重建（paused/running/error 互转），进度轮询不碰按钮节点
+  // ——否则 600ms 重建一次按钮，鼠标悬停时按钮像在抽动。
+  function patchDlRow(it, row, prevState) {
     if (!row) return;
     const bar = row.querySelector(".dlc-bar-fill");
     const pctEl = row.querySelector(".dlc-pct");
@@ -475,7 +480,7 @@
       if (paused) stEl.style.setProperty("color", "var(--warn,#e6a23c)");
       else stEl.style.removeProperty("color");
     }
-    if (actions) actions.innerHTML = dlcActionsHtml(it);
+    if (actions && prevState !== it.state) actions.innerHTML = dlcActionsHtml(it);
   }
 
   function applyPyDls(items) {
@@ -513,7 +518,7 @@
       if (state.view === "dlcenter" && state.dlTab === "running") {
         const row = document.querySelector('[data-dlr="' + it.id + '"]');
         if (row) {
-          patchDlRow(it, row);
+          patchDlRow(it, row, prevState);
         } else {
           renderDlCenter();
         }
@@ -702,9 +707,28 @@
   }
 
   function dlcDoneHtml(done) {
-    if (!done.length) return '<div class="empty">还没有下载完成记录</div>';
-    let html = '<div class="dlc-row dlc-head"><span></span><span>文件</span><span>大小</span><span>完成时间</span><span>保存位置</span><span></span></div>';
+    if (!done.length) return '<div class="empty">还没有下载记录</div>';
+    let html = '<div class="dlc-row dlc-head"><span></span><span>文件</span><span>大小</span><span>时间</span><span>保存位置</span><span></span></div>';
     for (const it of done) {
+      const st = it.status || "done";
+      if (st === "canceled" || st === "error") {
+        // 已取消 / 下载失败：状态分明，不当作下载完成显示
+        const shown = st === "canceled" ? "已取消" : "下载失败";
+        const sizeTxt = it.received
+          ? (it.total > it.received
+            ? "已下载 " + fmtSize(it.received) + " / " + fmtSize(it.total)
+            : fmtSize(it.received))
+          : "--";
+        html += '<div class="dlc-row dlc-done dlc-st-' + st + '">' +
+          '<span class="row-icon">' + fileIcon(it.name) + "</span>" +
+          '<div class="dlc-main"><div class="dlc-name" title="' + esc(it.name) + '">' + esc(it.name) + "</div>" +
+          '<span class="dlc-badge dlc-badge-' + st + '">' + shown + "</span></div>" +
+          '<span class="dlc-cell">' + sizeTxt + "</span>" +
+          '<span class="dlc-cell">' + fmtTime(it.ts) + "</span>" +
+          '<span class="dlc-cell dlc-cell-muted">—</span>' +
+          '<button class="btn btn-ghost btn-sm btn-dlr" type="button" data-dlr-rm="' + esc(it.key) + '" title="清除这条记录">' + I.trash + "</button></div>";
+        continue;
+      }
       // dir 有值 = 可跳转（软件窗口内下载：真实路径；外部浏览器下载：定位到的浏览器下载目录/文件）
       const hasLoc = !!it.dir;
       // 有路径但文件已被删除/移动 -> 显示「找不到」，置灰不可点
