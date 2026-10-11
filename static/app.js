@@ -517,6 +517,7 @@
   // 单行 patch：只更新进度/速度/状态文字，不重建整行整表（hover 不丢、布局不跳）。
   // 状态切换时按钮区也不重建节点——只改控制按钮的文案/委托标记/样式，
   // 避免点「暂停」瞬间按钮消失重建（悬停丢失、视觉抽动）。
+  // 兼容两种数据源：轮询快照项(done/total/state) 与 state.dlRunning 项(received/total/pyState)
   function patchDlRow(it, row, prevState) {
     if (!row) return;
     const bar = row.querySelector(".dlc-bar-fill");
@@ -524,18 +525,20 @@
     const spEl = row.querySelector(".dlc-speed");
     const stEl = row.querySelector(".dlc-state");
     const actions = row.querySelector(".dlc-actions");
-    const pct = safePct(it.received, it.total);
+    const st = it.state || it.pyState || "";
+    const received = (it.received != null) ? it.received : (it.done || 0);
+    const pct = safePct(received, it.total);
     if (bar) bar.style.width = pct + "%";
     if (pctEl) pctEl.textContent = it.total > 0 ? pct + "%" : "…";
-    const paused = it.state === "paused";
-    const errored = it.state === "error";
+    const paused = st === "paused";
+    const errored = st === "error";
     if (spEl) spEl.textContent = paused ? "0 B/s" : fmtSpeed(it.speed || 0);
     if (stEl) {
       stEl.textContent = errored ? "失败" : (paused ? "已暂停" : "下载中");
       if (paused) stEl.style.setProperty("color", "var(--warn,#e6a23c)");
       else stEl.style.removeProperty("color");
     }
-    if (actions && prevState !== it.state) {
+    if (actions && prevState !== st) {
       const ctl = actions.querySelector("[data-dl-pause],[data-dl-resume],[data-dl-retry]");
       if (ctl) {
         // 原地修改按钮（不重建节点、不改样式/宽度）：暂停↔继续↔重试
